@@ -4,6 +4,8 @@
 
 > **仅供学习研究，不构成任何投资建议。** 系统的所有数据均来源于互联网整理，会有一定的滞后性和不准确性，据此投资造成的财产损失概不负责。所有「交易」均基于**模拟账号**，不涉及真实资金。
 
+> 官网：<https://stock.objie.com/>　·　密钥获取与赞赏见下方[获取密钥、使用与赞赏](#获取密钥使用与赞赏)
+
 ---
 
 ## 它能做什么
@@ -78,7 +80,49 @@ ai-mock-trade/
     └── daily-summary-{date}.json          # 复盘总结（盈亏、反思、次日计划）
 ```
 
-> `.env` 已在下载时自动写入你的专属密钥；仅当你是手动复制而非下载包时，才需要 `cp .env.example .env` 并填入 `STOCK_SECRET_KEY`。
+## 获取密钥、使用与赞赏
+
+下载包里的 `.env` 已自动写入你的专属密钥（`STOCK_SECRET_KEY`），开箱即用。如果你是手动复制代码、或密钥需要更换，按下面的流程获取。
+
+### 获取密钥
+
+所有功能都依赖 `STOCK_SECRET_KEY` 这一个密钥。获取方式：访问官网，微信扫码关注公众号，即可拿到使用方式与专属密钥。
+
+> 官网：<https://stock.objie.com/>
+
+<p align="center">
+  <img src="https://stock.objie.com/static/img/wechat_mp.jpg" width="200" alt="公众号二维码" />
+</p>
+<p align="center">微信扫描或长按二维码 · 关注公众号 · 获取使用方式与密钥</p>
+
+具体步骤：
+
+1. 打开官网 <https://stock.objie.com/>
+2. 微信**扫描或长按**首页的公众号二维码，**关注公众号**
+3. 在公众号内获取**使用方式与专属密钥**（`STOCK_SECRET_KEY`）
+
+### 使用
+
+拿到密钥后，复制配置模板并填入即可（仅手动复制场景需要）：
+
+```bash
+cp .env.example .env
+# 编辑 .env，把 STOCK_SECRET_KEY 填成你拿到的密钥
+```
+
+填好 `.env` 后，两种使用方式任选其一：
+
+- **交互对话**：用 Claude Code / opencode / Codex 打开本项目目录，直接用大白话说需求（见下方[可以怎么对话](#可以怎么对话)）
+- **无人值守**：终端运行 `python watch_scheduler.py`，盘中每 5 分钟自动盯盘、每晚 21:00 自动复盘（见下方[定时盯盘](#定时盯盘-watch_schedulerpy)）
+
+### 赞赏
+
+如果这个工具对你的行情学习与研究有所帮助，欢迎请作者喝杯咖啡，你的支持是持续迭代的动力。
+
+<p align="center">
+  <img src="https://stock.objie.com/static/img/pay.png" width="200" alt="赞赏码" />
+</p>
+<p align="center">微信长按识别 · 金额随意</p>
 
 ---
 
