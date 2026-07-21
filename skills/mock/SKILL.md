@@ -37,12 +37,13 @@ python skills/mock/cli.py --help          # 打印用法
 | LLM 盘面分析（决策核心） | `cli.py market.get_intraday_analysis` |
 | 账号资金 | `cli.py trading.get_account` |
 | 当前持仓 | `cli.py trading.get_positions` |
-| 持仓分时（§2.3.1 加速止盈必需） | `cli.py market.get_stock_trendline 300083` |
-| 个股详情（hot_categories / 主力） | `cli.py market.get_stock_info 300083` |
+| 持仓分时（涨跌 + 主力，§0.6 加速止盈必需） | `cli.py market.get_stock_minute_trendline 300083` |
+| 个股详情（hot_categories / up_reason 板块归属、turn_z 换手） | `cli.py market.get_stock_info 300083` |
 | 严重异动禁买名单 | `cli.py market.get_key_watch_stocks` |
-| 三池选股（创业板强趋势） | `cli.py market.get_strategy_trend_stocks 6` |
-| 三池选股（创业+科创大趋势） | `cli.py market.get_strategy_trend_stocks 10` |
-| 三池选股（沪深主板） | `cli.py market.get_strategy_trend_stocks 7` |
+| 策略选股（创业板强趋势） | `cli.py market.get_strategy_trend_stocks 6` |
+| 策略选股（创业+科创大趋势） | `cli.py market.get_strategy_trend_stocks 10` |
+| 策略选股（沪深主板） | `cli.py market.get_strategy_trend_stocks 7` |
+| 策略选股（大幅回撤） | `cli.py market.get_strategy_trend_stocks 21` |
 | 本地状态读写（交易日志 / 自选池 / 复盘 / 策略） | 见 `skills/journal/SKILL.md`，走 `skills/journal/cli.py` |
 | 盯盘 / 复盘总结上报 | `cli.py report.submit_summary watch "..."` |
 
@@ -180,16 +181,17 @@ cli.py market.get_lianban_stocks --limit 50
 
 | 函数 | 用途 | 必填 |
 |------|------|------|
-| `get_strategy_trend_stocks(strategy_id, mode="", limit=30)` | 策略选股（6 创业板强趋势 / 10 创业+科创大趋势 / 7 沪深主板，三池全拉合并为唯一选股来源） | `strategy_id` |
+| `get_strategy_trend_stocks(strategy_id, mode="", limit=30)` | 策略选股（6 创业板强趋势 / 10 创业+科创大趋势 / 7 沪深主板 / 21 大幅回撤，多池全拉合并为唯一选股来源） | `strategy_id` |
 
 **示例**：
 ```bash
 cli.py market.get_strategy_trend_stocks 6             # 创业板强趋势
 cli.py market.get_strategy_trend_stocks 10 --limit 50 # 创业+科创大趋势
 cli.py market.get_strategy_trend_stocks 7             # 沪深主板
+cli.py market.get_strategy_trend_stocks 21 --limit 30 # 大幅回撤
 ```
 
-> 三池全拉合并：6 / 10 / 7 同时拉，按 `stock_code` 去重合并。
+> 多池全拉合并：6 / 10 / 7 / 21 同时拉，按 `stock_code` 去重合并。
 
 ### 盘中 LLM 分析
 
@@ -225,12 +227,14 @@ cli.py market.get_jtcsm_event_stocks evt_20260704_xxx 2026-07-04
 | `get_theme_stocks(theme_code, level2_code="", limit=15)` | 某主题下关联个股（实时行情） | `theme_code` |
 | `get_hot_theme_list(limit=20, level_only=True, sort_field="dr_count", keyword="", sort_order="")` | 主题看板列表（按大肉/涨停/主力等排序） | — |
 | `get_theme_stock_list(code, field="zdf", sort="desc", limit=15, keyword="")` | 主题看板个股（含分时曲线） | `code` |
+| `get_theme_detail(code)` | 主题详情弹窗（分时曲线 + 近 10 日收盘 + 二级子主题） | `code` |
 
 **示例**：
 ```bash
 cli.py market.get_hot_theme_list --sort_field amount_main --limit 30
 cli.py market.get_theme_stocks theme_001 --level2_code lvl2_001 --limit 20
 cli.py market.get_theme_stock_list theme_001 --field amount_main --sort desc
+cli.py market.get_theme_detail theme_001
 ```
 
 ### 选股（POST）

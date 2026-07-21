@@ -24,12 +24,17 @@
 
 **方式 A · AI IDE 对话**
 
-用 Claude Code / opencode / Codex 打开本项目目录，`.env` 与系统指令自动加载，直接用大白话说需求即可：
+用 Claude Code / Opencode / Codex 打开本项目目录，`.env` 与系统指令自动加载，直接用大白话说需求即可：
 
 ```
 > 执行一次盯盘
-> 今天大盘怎么样？看看热点板块排名
-> 帮我记录一次买入研究：中科曙光 1000 股，价格 45 元
+
+> 你今天为什么会买入紫光股份，理由是什么？
+
+> 我需要重构心法和策略，全面的改造为只做接力
+
+> 增加一条纪律：昨日涨停今日禁止买入
+
 ```
 
 **方式 B · 终端无人值守**
@@ -84,7 +89,7 @@ cp .env.example .env   # 编辑 .env，把 STOCK_SECRET_KEY 填成你的密钥
 
 ## 相关文档
 
-- 系统总纲：[`CLAUDE.md`](./CLAUDE.md)（Claude Code）/ [`AGENTS.md`](./AGENTS.md)（opencode）——角色、操作流程骨架、输出规范、执行边界
+- 系统总纲：[`CLAUDE.md`](./CLAUDE.md)（Claude Code）/ [`AGENTS.md`](./AGENTS.md)（Opencode）——角色、操作流程骨架、输出规范、执行边界
 - 核心纪律：[`memory/trading-mindset.md`](./memory/trading-mindset.md)（不可变）
 - 动态策略：[`memory/dynamic-strategy.md`](./memory/dynamic-strategy.md)（可变，独占所有 LLM 字段消费规则）
 - 接口索引：[`skills/mock/SKILL.md`](./skills/mock/SKILL.md)、[`skills/journal/SKILL.md`](./skills/journal/SKILL.md)（函数签名以各 `.py` docstring 为准）

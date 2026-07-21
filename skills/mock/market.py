@@ -592,6 +592,7 @@ def get_strategy_trend_stocks(
             7 - 沪深主板趋势股（强趋势：10 日内涨幅 > 7%）
             8 - 近期涨幅巨大
             10 - 创业+科创板大趋势（涨幅 > 3% 且 15 日内 > 9%，覆盖创业+科创板）
+            21 - 大幅回撤
         mode: str（可选，默认 ""）- 数据模式
             ""           - 策略选股（默认）
             "amount_top" - 成交额排名前 N
@@ -641,7 +642,8 @@ def get_key_watch_stocks() -> dict:
         data: list[dict]，按交易日倒序、同交易日内涨幅倒序，每项含：
             stock_code: str          - 股票代码
             stock_name: str          - 股票名称
-            zdf: float               - 触发当日涨跌幅（%）
+            zdf: float               - 异动当日涨跌幅（%）
+            real_zdf: float | None   - 实时涨跌幅（%），来源 now_stock 表，无记录时为 None
             is_happen: int           - 是否已发生：1=已发生异动，0=预期即将发生异动
             change_rate_target: float - 距触发严重异动还差涨幅（%），预期记录的异动上限
             trade_date: str          - 触发交易日（YYYY-MM-DD）
@@ -1158,6 +1160,32 @@ def get_theme_stock_list(
         "limit": limit,
         "keyword": keyword,
     })
+
+
+# 获取主题详情弹窗聚合数据（今日分时曲线 + 近 10 日收盘数据 + 二级子主题数据）
+def get_theme_detail(code: str) -> dict:
+    """
+    获取主题详情弹窗所需的聚合数据（盯盘页「小表格」点击某主题时弹出）。
+
+    入参：
+        code: str（必传）- 一级主题 code
+
+    返回 -> dict（信封格式）：
+        data: {
+            "name": str,                          # 主题名称
+            "trendline": {                        # 今日分时曲线聚合
+                "labels": list[str],              # 时间轴 [HH:MM]
+                "main_amount_data": list[float],  # 主力资金净流入（亿元）
+                "zdf_data": list[float],          # 主题平均涨跌幅（%）
+                "volume_data": list[int],         # 分时累计成交量（股）
+                "zdf_minute_data": list[float]    # 分钟涨跌幅（%），用于成交量柱着色
+            },
+            "daily_history": list[dict],          # 近 10 日小表格收盘数据（日期倒序）
+            "sub_themes": list[dict]              # 二级子主题今日数据
+        }
+        成分股今日涨跌幅由前端复用 /theme_stock_list 单独拉取。
+    """
+    return _get("/api/web/theme_detail", {"code": code})
 
 
 # ==================== 五、选股维度 ====================
