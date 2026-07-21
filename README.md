@@ -15,6 +15,7 @@
 - **每日复盘**：盈亏与情绪复盘、次日计划、自选池整理
 - **定时调度**：常驻进程按交易时段自动盯盘、盘后自动复盘，无人值守
 - **状态读写**：本地交易日志、自选池、复盘总结、动态策略（纯本地文件）
+- **AI 调教**：主动指导 Agent 优化心法和交易策略，调教成最适合自己的样子
 
 ---
 
@@ -89,9 +90,9 @@ cp .env.example .env   # 编辑 .env，把 STOCK_SECRET_KEY 填成你的密钥
 
 ## 相关文档
 
-- 系统总纲：[`CLAUDE.md`](./CLAUDE.md)（Claude Code）/ [`AGENTS.md`](./AGENTS.md)（Opencode）——角色、操作流程骨架、输出规范、执行边界
-- 核心纪律：[`memory/trading-mindset.md`](./memory/trading-mindset.md)（不可变）
-- 动态策略：[`memory/dynamic-strategy.md`](./memory/dynamic-strategy.md)（可变，独占所有 LLM 字段消费规则）
+- 系统总纲：[`CLAUDE.md`](./CLAUDE.md)（Claude Code）/ [`AGENTS.md`](./AGENTS.md)（Opencode）（总流程控制与核心说明）
+- 核心纪律：[`memory/trading-mindset.md`](./memory/trading-mindset.md)（按需修改，每个用户最核心的纪律要求）
+- 动态策略：[`memory/dynamic-strategy.md`](./memory/dynamic-strategy.md)（总纲与心法的具象化操作细则，以及经验教训）
 - 接口索引：[`skills/mock/SKILL.md`](./skills/mock/SKILL.md)、[`skills/journal/SKILL.md`](./skills/journal/SKILL.md)（函数签名以各 `.py` docstring 为准）
 
 ---
