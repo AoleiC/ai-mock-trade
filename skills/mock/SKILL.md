@@ -177,11 +177,11 @@ cli.py market.get_key_watch_stocks
 cli.py market.get_lianban_stocks --limit 50
 ```
 
-### 策略选股
+### 内置的策略选股
 
 | 函数 | 用途 | 必填 |
 |------|------|------|
-| `get_strategy_trend_stocks(strategy_id, mode="", limit=30)` | 策略选股（6 创业板强趋势 / 10 创业+科创大趋势 / 7 沪深主板 / 21 大幅回撤，多池全拉合并为唯一选股来源） | `strategy_id` |
+| `get_strategy_trend_stocks(strategy_id, mode="", limit=30)` | 策略选股（6 创业板强趋势 / 10 创业+科创大趋势 / 7 沪深主板 / 21 大幅回撤） | `strategy_id` |
 
 **示例**：
 ```bash
@@ -190,8 +190,6 @@ cli.py market.get_strategy_trend_stocks 10 --limit 50 # 创业+科创大趋势
 cli.py market.get_strategy_trend_stocks 7             # 沪深主板
 cli.py market.get_strategy_trend_stocks 21 --limit 30 # 大幅回撤
 ```
-
-> 多池全拉合并：6 / 10 / 7 / 21 同时拉，按 `stock_code` 去重合并。
 
 ### 盘中 LLM 分析
 

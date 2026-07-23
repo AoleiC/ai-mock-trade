@@ -396,7 +396,9 @@ def get_stock_minute_trendline(code: str) -> dict:
                 "data": list[float],
                 "min": float,
                 "max": float
-            }
+            },
+            "fund_trend": "steady_inflow|steady_outflow|flat|outflow_then_inflow|inflow_then_outflow",  # 主力资金分时趋势（代码预计算，含转向）
+            "fund_divergence": "divergence|normal"  # 分时资金背离状态：价格收涨但主力资金持续流出/先流入后流出
         }
     """
     return _get("/api/web/minute_trendline", {"scene": "stock", "code": code})
@@ -763,16 +765,16 @@ def get_intraday_analysis() -> dict:
         temperature_score: int                       # 大盘情绪温度分值（0-100）
         temperature_label: str                       # 大盘情绪阶段标签（冰点/退潮/修复/升温/高潮/降温）
         temperature_reasoning: str                   # 温度推理原文
+        sentiment_label: str                         # 短线情绪阶段标签（保守/偏保守/中性/偏激进/激进）
+        sentiment_score: int                         # 短线情绪温度分值（0-100）
         attack_directions: list[DirectionDict]       # 顶层进攻方向（用于交叉验证，**不直接选股**）
         retreat_directions: list[DirectionDict]      # 顶层撤退方向
-        sentiment_analysis: SentimentDict            # 短线情绪温度分析
+        sentiment_analysis: SentimentDict            # 短线情绪温度分析（含推理、置信度、关键信号等完整 JSON）
         capital_analysis: CapitalDict                # 资金面分析
         final_analysis: FinalDict                    # 最终汇总分析（含 position_limit）
         hot_rotation_analysis: HotRotationDict       # 热点轮动分析
-        model_used: str                              # 使用的 LLM 模型名
-
-        # 可选字段（历史表结构有，但部分记录缺位；agent 不消费）
-        concept_hype: list | dict | str | None       # 概念炒作方向 — 已不在 API 响应中，agent 忽略
+        total_duration_ms: int                       # 多维分析总耗时（毫秒）
+        task_details: str                            # 五个任务耗时明细，如：大盘温度=5.2s, 短线情绪=10.1s, 资金面=8.3s, 热点轮动=15.7s, 汇总=6.4s
 
     ====== DirectionDict（attack_directions / retreat_directions 共用结构）======
         {
@@ -793,6 +795,7 @@ def get_intraday_analysis() -> dict:
             "confidence": str,                       # LLM 置信度（高/中/低）
             "sentiment_score": int,                  # 短线情绪分值（0-100）
             "reasoning": str,                        # 推理原文
+            "divergence_type": str,                  # 分歧性质（良性分歧/恶性退潮/一致加速/无分歧）—— 回调方向算机会还是风险的定性依据
             "key_signals": [                         # 关键信号列表
                 {
                     "signal": str,                   # 信号描述
@@ -805,7 +808,8 @@ def get_intraday_analysis() -> dict:
     ====== CapitalDict（capital_analysis）======
         {
             "attack_directions": [DirectionDict, ...],     # 资金进攻方向（带 persistence 字段）
-            "retreat_directions": [DirectionDict, ...],    # 资金撤退方向
+            "retreat_directions": [DirectionDict, ...],    # 资金撤退方向（满足广度+深度门槛）
+            "observe_directions": [DirectionDict, ...],    # 观察方向（未达门槛的苗头，只看不操作）
             "capital_flow_summary": str,                   # 资金面总结
             "institutional_signal": str                    # 机构资金信号
         }
@@ -817,6 +821,7 @@ def get_intraday_analysis() -> dict:
             "sentiment_capital_alignment": str,            # 共振/警惕/撤退
             "attack_directions": [DirectionDict, ...],     # 本期确认的进攻方向（**主用**）
             "retreat_directions": [DirectionDict, ...],    # 本期确认的撤退方向（**主用**）
+            "observe_directions": [DirectionDict, ...],    # 观察方向（未达门槛的苗头，**只看不操作，不触发任何动作**）
             "position_limit": int,                         # **当日仓位上限（0-100）—— 直接采用，不自行调档**
             "position_reasoning": str,                     # 仓位建议理由（仅供日志）
             "vs_prev_analysis": str,                       # 与上次分析的差异
@@ -869,6 +874,8 @@ def get_intraday_analysis() -> dict:
     ====== 嵌套路径速查（agent 调用示例）======
         data["temperature_score"]                                  # 大盘温度分值
         data["temperature_label"]                                  # 大盘温度标签
+        data["sentiment_label"]                                     # 短线情绪标签（仓位主锚，独立字段）
+        data["sentiment_score"]                                     # 短线情绪分值（独立字段）
         data["sentiment_analysis"]["sentiment_label"]               # 短线情绪（仓位主锚）
         data["final_analysis"]["position_limit"]                    # 当日仓位上限（必用）
         data["final_analysis"]["position_reasoning"]               # 仓位理由（日志）
