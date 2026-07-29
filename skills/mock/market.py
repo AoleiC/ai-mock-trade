@@ -397,8 +397,8 @@ def get_stock_minute_trendline(code: str) -> dict:
                 "min": float,
                 "max": float
             },
-            "fund_trend": "steady_inflow|steady_outflow|flat|outflow_then_inflow|inflow_then_outflow",  # 主力资金分时趋势（代码预计算，含转向）
-            "fund_divergence": "divergence|normal"  # 分时资金背离状态：价格收涨但主力资金持续流出/先流入后流出
+            "fund_trend": "steady_inflow|steady_outflow|flat",  # 主力资金分时趋势方向（代码预计算，三态）
+            "fund_divergence": "divergence|normal"  # 分时资金背离状态：fund_trend 为 steady_outflow 且价格收涨、当前主力净额为负时判 divergence
         }
     """
     return _get("/api/web/minute_trendline", {"scene": "stock", "code": code})
@@ -588,21 +588,46 @@ def get_strategy_trend_stocks(
     """
     获取策略趋势股列表
 
+    本接口需登录（secret_key），未配置密钥返回 401。
+    仅响应对外公开的策略（is_public=1），未公开或不存在的 strategy_id 返回空列表。
+
     入参：
         strategy_id: int（必传）- 策略 ID
-            6 - 创业板趋势股（强趋势：10 日内涨幅 > 7%）
-            7 - 沪深主板趋势股（强趋势：10 日内涨幅 > 7%）
-            8 - 近期涨幅巨大
-            10 - 创业+科创板大趋势（涨幅 > 3% 且 15 日内 > 9%，覆盖创业+科创板）
-            21 - 大幅回撤
+            盘中选股：
+                1  - 今日大面
+                6  - 今日创业板强趋势（强趋势：10 日内涨幅 > 7%）
+                7  - 今日主板趋势（沪深主板强趋势：10 日内涨幅 > 7%）
+                9  - 近期成交额巨大
+                10 - 今日创业科创趋势（涨幅 > 3% 且 15 日内 > 9%，覆盖创业+科创板）
+                21 - 近期大幅回撤
+                22 - 近期百日新高（近 5 日内创百日新高）
+                23 - 今日强势但大幅回撤（昨涨停或今日大涨 > 9%，且自最高点回撤 ≥ 10%）
+            盘后选股：
+                2  - 昨日大面
+                8  - 近期涨幅巨大
+                24 - 最近多板（近 5 日出现过二连板及以上）
+                25 - 近期烂板（近 5 日出现过炸板）
+                26 - 昨日烂板
+                27 - 昨日断板（昨日涨停、今日未涨停）
+                28 - 昨日涨停
+                29 - 昨日强势但大幅回撤（盘后口径，同 23）
         mode: str（可选，默认 ""）- 数据模式
             ""           - 策略选股（默认）
             "amount_top" - 成交额排名前 N
         limit: int（可选，默认 30）- 返回数量上限
 
     返回 -> dict（信封格式）：
-        data: list[dict]，每项含 stock_code/stock_name/zdf/price/turn_z/
-              amount(str)/main_amount(str)/intraday(list[float])
+        data: list[dict]，按选股生成时的原始顺序返回，每项含：
+            stock_code: str          - 股票代码
+            stock_name: str          - 股票名称
+            zdf: float               - 涨跌幅（%）
+            price: float             - 现价
+            turn_z: float            - 自由换手率（%）
+            amount: str              - 成交额（已格式化）
+            main_amount: str         - 主力净额（已格式化）
+            value_z_str: str         - 自由流通市值（已格式化，亿）
+            intraday: list[float]    - 当日分时涨跌幅序列（按时间正序）
+            hot_categories: str      - 热点分类（逗号分隔，1-3 个；LLM 分类未跑时为空串）
     """
     return _get("/api/web/strategy_trend_stocks", {
         "strategy_id": strategy_id,
@@ -612,20 +637,27 @@ def get_strategy_trend_stocks(
 
 
 # 获取小时热度榜前 30 的个股
-def get_hourly_hot_top(sort_by: str = "rank") -> dict:
+def get_hourly_hot_top(
+    sort_by: str = "rank",
+    sort_dir: str = "desc",
+) -> dict:
     """
     获取小时热度榜前 30 的个股
 
     入参：
         sort_by: str（可选，默认 "rank"）- 排序字段
-            rank         - 热度排名
-            zdf          - 涨幅
-            amount_main  - 主力
+            rank        - 热度排名
+            zdf         - 涨幅
+            main_amount - 主力
+        sort_dir: str（可选，默认 "desc"）- 排序方向：desc 降序 / asc 升序
 
     返回 -> dict（信封格式）：
         data: list[dict]，每项含 stock_code/stock_name/zdf(float)/main_amount(str)
     """
-    return _get("/api/web/hourly_hot_top", {"sort_by": sort_by})
+    return _get("/api/web/hourly_hot_top", {
+        "sort_by": sort_by,
+        "sort_dir": sort_dir,
+    })
 
 
 # 获取近 11 个交易日的重点监控异动股名单（**禁买名单**）
@@ -745,8 +777,7 @@ def get_intraday_analysis() -> dict:
     获取最新一条盘中 LLM 盘面分析结果（agent 盘面分析的唯一权威源）
 
     数据来源：intraday_llm_analysis 表，按 id 倒序取第一条。
-    分析由 compute_intraday_analysis.py 计算并写入。
-    LLM 已从大盘情绪温度、短线情绪温度、资金方向、热点轮动等方面做综合评估，
+    LLM 已从大盘情绪温度、短线情绪温度、题材分析（板块级方向+风向标个股）等方面做综合评估，
     agent 应围绕本接口返回的字段执行盯盘/选股/交易，**不再自行计算或对照硬阈值**。
 
     入参：无
@@ -767,19 +798,19 @@ def get_intraday_analysis() -> dict:
         temperature_reasoning: str                   # 温度推理原文
         sentiment_label: str                         # 短线情绪阶段标签（保守/偏保守/中性/偏激进/激进）
         sentiment_score: int                         # 短线情绪温度分值（0-100）
-        attack_directions: list[DirectionDict]       # 顶层进攻方向（用于交叉验证，**不直接选股**）
-        retreat_directions: list[DirectionDict]      # 顶层撤退方向
+        attack_directions: list[DirectionDict]       # 顶层进攻方向（= final_analysis.attack_directions 的拷贝，**不直接选股**）
+        retreat_directions: list[DirectionDict]      # 顶层撤退方向（= final_analysis.retreat_directions 的拷贝）
         sentiment_analysis: SentimentDict            # 短线情绪温度分析（含推理、置信度、关键信号等完整 JSON）
-        capital_analysis: CapitalDict                # 资金面分析
+        capital_analysis: None                       # 历史遗留字段，恒为 None（资金面维度已并入题材分析）
         final_analysis: FinalDict                    # 最终汇总分析（含 position_limit）
-        hot_rotation_analysis: HotRotationDict       # 热点轮动分析
+        hot_rotation_analysis: HotRotationDict       # 题材分析（板块级方向 + 代码查表填充的风向标个股）
         total_duration_ms: int                       # 多维分析总耗时（毫秒）
-        task_details: str                            # 五个任务耗时明细，如：大盘温度=5.2s, 短线情绪=10.1s, 资金面=8.3s, 热点轮动=15.7s, 汇总=6.4s
+        task_details: str                            # 四个任务耗时明细，如：大盘温度=5.2s, 短线情绪=10.1s, 题材分析=15.7s, 汇总=6.4s
 
-    ====== DirectionDict（attack_directions / retreat_directions 共用结构）======
+    ====== DirectionDict（attack_directions / retreat_directions / observe_directions 共用结构）======
         {
-            "direction": str,                        # 方向名，如"算力/CPO/AI算力基础设施"
-            "stocks": [                              # 关联个股列表
+            "direction": str,                        # 方向名（逐字沿用题材分析的板块名，跨帧稳定）
+            "stocks": [                              # 关联个股列表（服务端已硬剔除题材分析个股池外的个股）
                 {
                     "name": str,                     # 股票名称
                     "code": str,                     # 股票代码（纯数字）—— 极少数情况为空串，如"京东方A"
@@ -805,27 +836,17 @@ def get_intraday_analysis() -> dict:
             ]
         }
 
-    ====== CapitalDict（capital_analysis）======
-        {
-            "attack_directions": [DirectionDict, ...],     # 资金进攻方向（带 persistence 字段）
-            "retreat_directions": [DirectionDict, ...],    # 资金撤退方向（满足广度+深度门槛）
-            "observe_directions": [DirectionDict, ...],    # 观察方向（未达门槛的苗头，只看不操作）
-            "capital_flow_summary": str,                   # 资金面总结
-            "institutional_signal": str                    # 机构资金信号
-        }
-        # 注：DirectionDict 在 capital_analysis 里每项额外有 "persistence": str（强/中/弱）
-
     ====== FinalDict（final_analysis）—— agent 决策核心 =====
         {
-            "market_overview": str,                        # 盘面综述
+            "market_overview": str,                        # 盘面综述（其中引用的仓位数值已与 position_limit 落库值一致）
             "sentiment_capital_alignment": str,            # 共振/警惕/撤退
             "attack_directions": [DirectionDict, ...],     # 本期确认的进攻方向（**主用**）
             "retreat_directions": [DirectionDict, ...],    # 本期确认的撤退方向（**主用**）
-            "observe_directions": [DirectionDict, ...],    # 观察方向（未达门槛的苗头，**只看不操作，不触发任何动作**）
-            "position_limit": int,                         # **当日仓位上限（0-100）—— 直接采用，不自行调档**
+            "observe_directions": [DirectionDict, ...],    # 观察方向（未达门槛的苗头，待确认；系统不自动买卖，但需提示用户随机应变）
+            "position_limit": int,                         # **当日仓位上限（0-100），服务端已做跨帧平滑 —— 直接采用，不自行调档**
             "position_reasoning": str,                     # 仓位建议理由（仅供日志）
             "vs_prev_analysis": str,                       # 与上次分析的差异
-            "action_advice": str,                          # **操作建议 —— 必读**
+            "action_advice": str,                          # **操作建议（条件式提示，如"可观察X的回踩机会"）—— 必读**
             "risk_warnings": [str, ...]                    # 风险提示列表
         }
 
@@ -836,28 +857,42 @@ def get_intraday_analysis() -> dict:
                 {
                     "sector": str,                         # 板块名
                     "intensity": str,                      # 强/中/弱
-                    "quality": str,                        # 大票共振/游资主导/机构配置/小票乱涨
+                    "quality": str,                        # 大小票共振/大票主导/小票主导/其他（按 200 亿市值阈值预计算）
                     "catalyst": str,                       # 今日催化事件（50 字内）
-                    "trade_implication": str,              # 即时动作：可追/可低吸/观察
                     "today_zt": int,                       # 今日涨停数（可选）
                     "today_inflow": str,                   # 今日主力净流入（可选，如 +15亿）
                     "today_big_face": int,                 # 今日大肉家数（可选）
-                    "key_stocks": [str, ...],              # 龙头股名称列表（可选）
+                    "key_stocks": [                        # 风向标个股（代码查表填充，非 LLM 输出）
+                        {
+                            "name": str,                   # 股票名称
+                            "code": str,                   # 股票代码（异动兜底路径可能为空串）
+                            "zdf": float                   # 涨跌幅（%）
+                        }
+                    ],
                     "evidence": str                        # 反复活跃+热点效应的数据证据
                 }
             ],
-            "retreat_sectors": [                           # 资金正在撤退的方向（最多 3 个）
+            "retreat_sectors": [                           # 资金正在撤退的方向（最多 5 个）
                 {
                     "sector": str,                         # 板块名
                     "retreat_evidence": str,               # 主力流出/涨停骤降/大面扩散的具体数据
-                    "risk_level": str                      # 板块内风险/可能蔓延
+                    "risk_level": str,                     # 板块内风险/可能蔓延
+                    "key_stocks": [KeyStockDict, ...]      # 领跌风向标个股（结构同 attack_sectors）
                 }
             ],
             "emerging_sectors": [                          # 新冒头方向（最多 2 个，只观察不参与）
                 {
                     "sector": str,                         # 板块名
                     "signal": str,                         # 今日新出现的涨停/流入信号
-                    "watch_reason": str                    # 为什么值得观察
+                    "watch_reason": str,                   # 为什么值得观察
+                    "key_stocks": [KeyStockDict, ...]      # 风向标个股（结构同 attack_sectors）
+                }
+            ],
+            "defensive_sectors": [                         # 防御性板块（避险抱团，非短线进攻题材；无则空数组）
+                {
+                    "sector": str,                         # 板块名
+                    "signal": str,                         # 当日主力净流入数据
+                    "note": str                            # 进攻/退潮语境下的定位说明
                 }
             ],
             "market_structure": str,                       # 市场结构：健康/分散/混沌/退潮（描述当下状态，不预测）
@@ -869,6 +904,7 @@ def get_intraday_analysis() -> dict:
         - data["status"] == "failed" ........... LLM 分析失败，看 error_message
         - data["final_analysis"] is None ....... 汇总缺失（部分场景）
         - data["final_analysis"]["position_limit"] is None ... LLM 未给仓位建议（极少见）
+        - data["capital_analysis"] 恒为 None ... 历史遗留字段，无需消费
         - 任一必用字段为 None / 空列表 / 空字符串 → 输出"该字段为空，无法判定"并跳过依赖该字段的判定
 
     ====== 嵌套路径速查（agent 调用示例）======
@@ -885,10 +921,11 @@ def get_intraday_analysis() -> dict:
         data["final_analysis"]["attack_directions"]                # 进攻方向
         data["final_analysis"]["retreat_directions"]               # 撤退方向
         data["hot_rotation_analysis"]["attack_sectors"]             # 资金进攻方向（活跃方向来源之一）
+        data["hot_rotation_analysis"]["attack_sectors"][0]["key_stocks"]  # 进攻方向风向标个股 [{name, code, zdf}]
         data["hot_rotation_analysis"]["retreat_sectors"]            # 资金撤退方向
+        data["hot_rotation_analysis"]["emerging_sectors"]           # 新冒头方向（只观察不参与）
+        data["hot_rotation_analysis"]["defensive_sectors"]          # 防御性板块（避险抱团）
         data["hot_rotation_analysis"]["market_structure"]           # 市场结构（健康/分散/混沌/退潮）
-        data["capital_analysis"]["capital_flow_summary"]           # 资金面总结
-        data["capital_analysis"]["institutional_signal"]            # 机构资金信号
     """
     return _get("/api/web/intraday_analysis")
 

@@ -2,9 +2,9 @@
 
 面向 Claude Code / Opencode / Codex 的 A 股 AI 研究项目包：行情查询、AI 盯盘、每日复盘、研究型模拟持仓记录、定时调度一体化 SDK。内置柚子 AI 完整系统指令与纪律 / 策略心法（`memory/` 可读可改，调教出最适合你的打法），用自然语言对话即可驱动，也可终端无人值守运行。
 
-> **仅供学习研究，不构成任何投资建议。** 系统所有数据均来源于互联网整理，会有一定的滞后性和不准确性，据此投资造成的财产损失概不负责。所有「交易」均基于**模拟账号**，不涉及真实资金。
+> **仅供学习研究，不构成任何投资建议。** 系统所有数据均来源于互联网整理，会有一定的滞后性和不准确性，据此投资造成的财产损失概不负责。所有「交易」均基于**模拟盘账号**，不涉及真实资金。⚠️⚠️⚠️⚠️⚠️
 
-> 官网：<https://stock.objie.com/>　|　能力与接口文档：<https://stock.objie.com/skills>
+> 官网：<https://stock.objie.com/>　|　说明文档：<https://stock.objie.com/skills>
 
 ---
 
@@ -81,12 +81,12 @@ cp .env.example .env   # 编辑 .env，把 STOCK_SECRET_KEY 填成你的密钥
 
 ## 赞赏
 
-它陪你看盘复盘、验证想法，如果为你省下过时间、或是点亮过某个灵感，欢迎请我喝杯咖啡。你的支持会变成**深夜里亮着的服务器和下一次推送的新功能**，让这份陪伴延续下去。
+它陪你看盘复盘、验证想法，每日的解读与计算都跑在服务器与 AI 算力之上。如果它为你省下过时间、或是点亮过某个灵感，欢迎赞助一份支持——你的支持会优先用于**服务器升级和 AI 算力支出**，让更深度的复盘与更快的解读持续陪伴你。
 
 <p align="center">
   <img src="assets/pay.png" width="200" alt="赞赏码" />
 </p>
-<p align="center">微信长按识别 · 金额随心意 · 无论多少，都是我继续打磨的理由</p>
+<p align="center">微信长按识别 · 金额随心意 · 每一份支持都让算力更稳、功能更远</p>
 
 ---
 
@@ -96,6 +96,7 @@ cp .env.example .env   # 编辑 .env，把 STOCK_SECRET_KEY 填成你的密钥
 - 核心纪律：[`memory/trading-mindset.md`](./memory/trading-mindset.md)（按需修改，每个用户最核心的纪律要求）
 - 动态策略：[`memory/dynamic-strategy.md`](./memory/dynamic-strategy.md)（总纲与心法的具象化操作细则，以及经验教训）
 - 接口索引：[`skills/mock/SKILL.md`](./skills/mock/SKILL.md)、[`skills/journal/SKILL.md`](./skills/journal/SKILL.md)（函数签名以各 `.py` docstring 为准）
+- 自更新工具：[`tool.py`](./tool.py)（一键更新 skills / 系统指令 / memory，覆盖前自动备份）
 
 ---
 

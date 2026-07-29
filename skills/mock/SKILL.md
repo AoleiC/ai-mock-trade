@@ -181,21 +181,23 @@ cli.py market.get_lianban_stocks --limit 50
 
 | 函数 | 用途 | 必填 |
 |------|------|------|
-| `get_strategy_trend_stocks(strategy_id, mode="", limit=30)` | 策略选股（6 创业板强趋势 / 10 创业+科创大趋势 / 7 沪深主板 / 21 大幅回撤） | `strategy_id` |
+| `get_strategy_trend_stocks(strategy_id, mode="", limit=30)` | 策略选股（需登录；仅公开策略有数据。盘中：1 今日大面 / 6 创业板强趋势 / 7 主板趋势 / 9 成交额巨大 / 10 创业科创趋势 / 21 大幅回撤 / 22 百日新高 / 23 今日强势回撤；盘后：2 昨日大面 / 8 涨幅巨大 / 24 最近多板 / 25 近期烂板 / 26 昨日烂板 / 27 昨日断板 / 28 昨日涨停 / 29 昨日强势回撤） | `strategy_id` |
 
 **示例**：
 ```bash
-cli.py market.get_strategy_trend_stocks 6             # 创业板强趋势
-cli.py market.get_strategy_trend_stocks 10 --limit 50 # 创业+科创大趋势
-cli.py market.get_strategy_trend_stocks 7             # 沪深主板
-cli.py market.get_strategy_trend_stocks 21 --limit 30 # 大幅回撤
+cli.py market.get_strategy_trend_stocks 6             # 今日创业板强趋势
+cli.py market.get_strategy_trend_stocks 10 --limit 50 # 今日创业科创趋势
+cli.py market.get_strategy_trend_stocks 7             # 今日主板趋势
+cli.py market.get_strategy_trend_stocks 21 --limit 30 # 近期大幅回撤
+cli.py market.get_strategy_trend_stocks 22            # 近期百日新高
+cli.py market.get_strategy_trend_stocks 28            # 昨日涨停
 ```
 
 ### 盘中 LLM 分析
 
 | 函数 | 用途 | 必填 |
 |------|------|------|
-| `get_intraday_analysis()` | 最新盘中 LLM 盘面分析（**agent 唯一权威源**，含 `position_limit` / `sentiment_label` / `action_advice` / `risk_warnings` 等完整 schema，见 `market.py#689-` 注释） | — |
+| `get_intraday_analysis()` | 最新盘中 LLM 盘面分析（**agent 唯一权威源**，含 `position_limit` / `sentiment_label` / `action_advice` / `risk_warnings` 等完整 schema，见 `market.py` `get_intraday_analysis` docstring） | — |
 
 **示例**：
 ```bash
