@@ -319,7 +319,7 @@ def get_stock_info(stock_code: str) -> dict:
             "hot_categories": list[str],     # 关联热点分类名称（可点击跳转）
             "hot_category_identities": dict, # 各热点分类对应的身份
                 # key: 热点名称（与 hot_categories 元素一一对应）
-                # value: "龙头" | "中军" | "自选" | "跟风" | "候选" | "龙头退位" | "中军退位" | ""
+                # value: "龙头" | "中军" | "市场印象" | "跟风" | "候选" | "龙头退位" | "中军退位" | ""
                 # 未在 hot_spot_stock 表收录时为 ""
             "yd_tags": list[str],       # 异动/涨停标签（不可点击）
             "up_reason": str | None,    # 涨停原因文本（不可点击）
@@ -945,15 +945,18 @@ def get_batch_stock_zdf(codes: str) -> dict:
 
 
 # 获取"今天炒什么"近 N 个交易日的事件列表
-def get_jtcsm_events(days: int = 1, limit: int = 30) -> dict:
+def get_jtcsm_events(days: int = 1, limit: int = 30, include_detail: bool = True) -> dict:
     """
     获取"今天炒什么"近 N 个交易日的事件列表（按热度倒序）
 
-    数据来源：DailyJtcsmEvent（主表）+ DailyJtcsmEventStock（子表）。
+    数据来源：DailyJtcsmEvent（主表）；include_detail=True 时关联 DailyJtcsmEventStock（子表）。
 
     入参：
         days: int（可选，默认 1）- 查询最近的交易日天数，范围 1-10
         limit: int（可选，默认 30）- 单日最大返回事件数，范围 1-100
+        include_detail: bool（可选，默认 True）- 是否附带事件摘要(summary)与关联个股(stocks)。
+            False 时仅返回概要（event_id/title/investment_direction/heat/trade_date/latest_stats），
+            需要个股可另调 get_jtcsm_event_stocks 按需获取，减少冗余传输。
 
     返回 -> dict（信封格式）：
         data: {
@@ -964,13 +967,15 @@ def get_jtcsm_events(days: int = 1, limit: int = 30) -> dict:
                 #   investment_direction: str 投资方向
                 #   heat: float             热度值（万单位）
                 #   trade_date: str         交易日期
-                #   summary: str            事件详情摘要（来自 detail 接口，可能为空）
+                #   latest_stats: dict      最新交易日走势汇总（avg_zdf / main_net_inflow，可缺省）
+                #   仅 include_detail=True 时附带：
+                #   summary: str            事件详情摘要（可能为空）
                 #   stocks: list[dict]      关联个股列表，每项含 stock_code/stock_name/
                 #                           rise_percent/limit_up_state/reason/
                 #                           show_name(子分类，多题材用 / 拼接)
         }
     """
-    return _get("/api/web/jtcsm_events", {"days": days, "limit": limit})
+    return _get("/api/web/jtcsm_events", {"days": days, "limit": limit, "include_detail": include_detail})
 
 
 # 获取"今天炒什么"事件关联个股在事件当天的行情快照

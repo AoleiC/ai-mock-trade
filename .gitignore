@@ -221,3 +221,6 @@ data/*
 
 # tool.py 自更新产物（备份与缓存，不应提交）
 backups/
+
+# kilo 配置和产物
+.kilo/

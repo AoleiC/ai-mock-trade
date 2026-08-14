@@ -184,15 +184,15 @@ def seconds_until_window(now: dt.datetime) -> int:
     # 当天还有可能进入的窗口
     morning_open = now.replace(hour=MORNING_START[0], minute=MORNING_START[1], second=0, microsecond=0)
     afternoon_open = now.replace(hour=AFTERNOON_START[0], minute=AFTERNOON_START[1], second=0, microsecond=0)
-    afternoon_close = now.replace(hour=AFTERNOON_END[0], minute=AFTERNOON_END[1], second=0, microsecond=0)
     review_time = now.replace(hour=21, minute=0, second=0, microsecond=0)
 
     if now < morning_open and not is_weekend(morning_open):
         candidates.append(morning_open)
     if now < afternoon_open and not is_weekend(afternoon_open):
         candidates.append(afternoon_open)
-    # 复盘：仅在下午收盘之后到当天 23:59 之前考虑
-    if now > afternoon_close and now < review_time + dt.timedelta(hours=3):
+    # 复盘点：仅当今天尚未到复盘时间时才作为候选（已过点则等次日开盘，避免把
+    # 已过去的 review_time 当候选导致 delta 为负、退化成每分钟醒一次刷日志）
+    if now < review_time and not is_weekend(review_time):
         candidates.append(review_time)
 
     if candidates:
@@ -554,11 +554,20 @@ def main() -> int:
 
 
 def _interruptible_sleep(seconds: int, stop_flag: dict) -> None:
-    """可中断的 sleep，每秒检查一次退出标志。"""
-    for _ in range(seconds):
-        if stop_flag["stop"]:
+    """可中断 sleep：基于墙钟分段，每秒检查退出标志，防系统休眠睡过头。
+
+    以「调用时刻 + seconds」作为墙钟 deadline，循环里每次用 datetime.now()
+    重算剩余时间。系统休眠（如 Mac 合盖）期间墙钟仍在走，唤醒后 remaining 会
+    正确缩短 —— 不会像「for 循环按次数 sleep(1)」那样，因休眠把剩余次数对应
+    的真实等待时间整体往后推（曾导致非交易时段一次 sleep 3 万多秒，Mac 休眠
+    后开盘仍不触发）。
+    """
+    deadline = dt.datetime.now() + dt.timedelta(seconds=seconds)
+    while not stop_flag["stop"]:
+        remaining = (deadline - dt.datetime.now()).total_seconds()
+        if remaining <= 0:
             return
-        time.sleep(1)
+        time.sleep(min(1.0, remaining))
 
 
 if __name__ == "__main__":
