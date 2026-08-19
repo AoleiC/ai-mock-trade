@@ -1,10 +1,12 @@
+
+
 # 柚子 AI · A 股 AI Agent 项目包
 
 面向 Claude Code / Opencode / Codex 的 A 股 AI 研究项目包：行情查询、AI 盯盘、每日复盘、研究型模拟持仓记录、定时调度一体化 SDK。内置柚子 AI 完整系统指令与纪律 / 策略心法（`memory/` 可读可改，调教出最适合你的打法），用自然语言对话即可驱动，也可终端无人值守运行。
 
 > **仅供学习研究，不构成任何投资建议。** 系统所有数据均来源于互联网整理，会有一定的滞后性和不准确性，据此投资造成的财产损失概不负责。所有「交易」均基于**模拟盘账号**，不涉及真实资金。⚠️⚠️⚠️⚠️⚠️
 
-> 官网：<https://stock.objie.com/>　|　说明文档：<https://stock.objie.com/skills>
+> 官网：<https://stock.objie.com/> | 说明文档：<https://stock.objie.com/skills>
 
 ---
 
@@ -43,6 +45,7 @@
 **方式 B · 终端无人值守**
 
 ```bash
+pip install requests   # 安装依赖（SDK 核心请求库）
 python watch_scheduler.py
 ```
 
