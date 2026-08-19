@@ -109,11 +109,14 @@ from skills.journal.journal import read_trade_log, append_trade_action, read_dyn
 | `get_zt_timeline()` | 今日涨停时间轴（盯盘页右上半区时间轴展示，含涨跌停类型 / 板块归属 / 涨停原因） | — |
 | `get_indicator_trendline(code: str)` | 指标分时趋势线（平均股价/主力净额/大盘情绪温度等） | `code` |
 | `get_daily_indicators_history(days: int = 30)` | 历史指标矩阵（复盘用） | — |
+| `get_daily_summary(date=None, since=None)` | 全天异动时间轴（复盘用，`since=HH:MM` 增量拉取） | — |
 
 **示例**：
 ```bash
 cli.py market.get_indicator_trendline temperature
 cli.py market.get_daily_indicators_history --days 60
+cli.py market.get_daily_summary --date 2026-08-13
+cli.py market.get_daily_summary --since 10:30   # 增量：仅返回 time >= 10:30 的时间桶
 ```
 
 ### 热点
@@ -181,7 +184,7 @@ cli.py market.get_lianban_stocks --limit 50
 
 | 函数 | 用途 | 必填 |
 |------|------|------|
-| `get_strategy_trend_stocks(strategy_id, mode="", limit=30)` | 策略选股（需登录；仅公开策略有数据。盘中：1 今日大面 / 6 创业板强趋势 / 7 主板趋势 / 9 成交额巨大 / 10 创业科创趋势 / 21 大幅回撤 / 22 百日新高 / 23 今日强势回撤；盘后：2 昨日大面 / 8 涨幅巨大 / 24 最近多板 / 25 近期烂板 / 26 昨日烂板 / 27 昨日断板 / 28 昨日涨停 / 29 昨日强势回撤） | `strategy_id` |
+| `get_strategy_trend_stocks(strategy_id, mode="", limit=50, with_intraday=True)` | 策略选股（需登录；仅公开策略有数据，普通策略按当前实时涨跌幅降序。盘中：1 今日大面 / 6 创业板强趋势 / 7 主板趋势 / 9 成交额巨大 / 10 创业科创趋势 / 21 大幅回撤 / 22 百日新高 / 23 今日强势回撤；盘后：2 昨日大面 / 8 涨幅巨大 / 24 最近多板 / 25 近期烂板 / 26 昨日烂板 / 27 昨日断板 / 28 昨日涨停 / 29 昨日强势回撤。纯列表不需要分时曲线时传 `with_intraday=False` 省流量） | `strategy_id` |
 
 **示例**：
 ```bash

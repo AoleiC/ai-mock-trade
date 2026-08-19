@@ -4,6 +4,11 @@
 默认在每个交易日的 09:30-11:30、13:00-15:00 之间每 5 分钟触发一次「执行一次盯盘」；
 每个交易日 21:00 触发一次「复盘今天的行情数据」。非交易时段脚本只 sleep 不消耗资源。
 
+每次启动时会先自动检查并升级 skills 模块（调用 tool.py update skills，版本门禁 +
+缓存复用，同版本重复启动不占下载配额；失败只告警不阻塞启动），随后清理 data 目录中
+前天及更早的按日归档文件（trade-log / daily-summary / watchlist / 盯盘 txt / 调度器日志），
+仅保留昨天与今天两天的数据。
+
 支持的环境变量（也提供同名 CLI 参数，CLI 参数优先）：
   WATCH_CLI              AI CLI 名称，可选 opencode | claude，默认 opencode
   WATCH_INTERVAL_MINUTES 盯盘触发间隔（分钟），默认 5
@@ -30,6 +35,7 @@ import argparse
 import datetime as dt
 import logging
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -147,6 +153,123 @@ def setup_logger(log_dir: Path) -> logging.Logger:
     logger.addHandler(file_handler)
 
     return logger
+
+
+# 旧日志清理用：从按日归档文件名提取日期的正则（ISO 与紧凑两种格式）
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")  # 匹配 2026-08-15，如 trade-log-2026-08-15.json
+_COMPACT_DATE_RE = re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})(?!\d)")  # 匹配 20260815，如 run-20260815-101530.log
+
+
+# 从按日归档文件名提取日期
+def _date_from_filename(name: str) -> dt.date | None:
+    """从文件名提取归档日期，兼容 ISO（2026-08-15）与紧凑（20260815）两种格式。
+
+    参数:
+        name: 文件名（不含目录），如 trade-log-2026-08-15.json、run-20260815-101530.log
+    返回:
+        提取成功返回对应 date；文件名不含可识别日期（如 .keep）返回 None
+    """
+    match = _ISO_DATE_RE.search(name) or _COMPACT_DATE_RE.search(name)
+    if not match:
+        return None
+    try:
+        return dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        # 日期字段非法（如 2026-13-40），视为无法识别
+        return None
+
+
+# 启动前清理旧日志
+def cleanup_old_logs(data_dir: Path, log_dir: Path, logger: logging.Logger) -> None:
+    """启动前清理旧日志：删除归档日期 <= 前天的按日文件，仅保留最近两天（昨天 + 今天）。
+
+    清理范围:
+        - data_dir（默认 <项目根>/data）: trade-log-*.json / daily-summary-* / watchlist-*.json / 盯盘 txt
+        - log_dir（默认 <项目根>/data/watch_scheduler_logs）: scheduler-*.log / run-*.log
+
+    说明: 删除「前天及更早」而非「恰好前天」，保证调度器间隔多日启动时旧文件不残留。
+    """
+    # 前天（含）之前的文件都删，保留昨天与今天
+    cutoff = dt.date.today() - dt.timedelta(days=2)
+
+    deleted = 0
+    # 两个目录都只扫顶层文件，不递归；watch_scheduler_logs 作为子目录会被 is_file() 跳过
+    for directory in (data_dir, log_dir):
+        if not directory.is_dir():
+            continue
+        for file in directory.iterdir():
+            if not file.is_file():
+                continue
+            file_date = _date_from_filename(file.name)
+            # 无法识别日期（.keep 等）或晚于截止日的文件跳过
+            if file_date is None or file_date > cutoff:
+                continue
+            try:
+                file.unlink()
+                deleted += 1
+                logger.debug("已删除旧日志: %s", file)
+            except OSError as exc:
+                logger.warning("删除旧日志失败: %s, err=%s", file, exc)
+    logger.info(
+        "旧日志清理完成: 截止日期<=%s(前天), 扫描目录=[%s, %s], 删除文件数=%d",
+        cutoff,
+        data_dir,
+        log_dir,
+        deleted,
+    )
+
+
+# 启动前自动升级 skills 模块
+def auto_upgrade_skills(project_dir: Path, logger: logging.Logger) -> None:
+    """启动前自动检查并升级 skills 模块（subprocess 复用 tool.py，失败不阻塞启动）。
+
+    调用 `python tool.py update skills`，享受 tool.py 自带的版本门禁与 zip 缓存：
+    - 同一服务端版本重复启动时命中缓存，不占每日下载配额
+    - 只更新 skills 模块，不触碰 memory / agents 等用户定制资产
+    - 任何失败（网络异常 / 认证失败 / 配额超限 / 超时）只打 WARNING，调度器照常启动
+
+    参数:
+        project_dir: 项目根目录（tool.py 所在位置，同时作为子进程 cwd）
+        logger: 调度器 logger（tool.py 的输出逐行转写进来，留痕到调度器日志文件）
+    """
+    tool_path = project_dir / "tool.py"
+    if not tool_path.is_file():
+        logger.warning("自动升级 skills 跳过: 未找到 %s", tool_path)
+        return
+
+    cmd = [sys.executable, str(tool_path), "update", "skills"]
+    logger.info("启动前自动升级 skills: 命令=%s", " ".join(shlex.quote(c) for c in cmd))
+    try:
+        # 捕获输出用于转写归档；超时兜底防止网络异常卡住调度器启动（超时后 run 会自动 kill 子进程）
+        # errors=replace：子进程输出解码失败时替换字符而非抛 UnicodeDecodeError，保证升级环节绝不向外抛异常
+        result = subprocess.run(
+            cmd,
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("自动升级 skills 失败(不阻塞启动): 原因=执行超时(180s), 命令=%s", cmd)
+        return
+    except OSError as exc:
+        logger.warning("自动升级 skills 失败(不阻塞启动): 原因=无法执行子进程, 错误=%s", exc)
+        return
+
+    # tool.py 的日志走 stderr，逐行转写到调度器日志（同时落盘到调度器日志文件）
+    for line in (result.stderr or "").splitlines():
+        line = line.strip()
+        if line:
+            logger.info("[tool.py] %s", line)
+
+    if result.returncode == 0:
+        logger.info("自动升级 skills 完成: returncode=0")
+    else:
+        logger.warning(
+            "自动升级 skills 失败(不阻塞启动): returncode=%d, 详情见上方 [tool.py] 输出",
+            result.returncode,
+        )
 
 
 def in_trading_window(now: dt.datetime) -> bool:
@@ -413,6 +536,12 @@ def main() -> int:
     logger = setup_logger(args.log_dir)
     stop_flag = {"stop": False}
     install_signal_handlers(logger, stop_flag)
+
+    # 启动前自动检查并升级 skills（版本门禁 + 缓存复用；失败不阻塞启动，--once 模式同样生效）
+    auto_upgrade_skills(args.project_dir, logger)
+
+    # 启动前清理前天及更早的旧日志（data 目录 + 调度器日志目录），防止运行时数据无限膨胀
+    cleanup_old_logs(args.project_dir / "data", args.log_dir, logger)
 
     # 单次执行模式：不写 PID 文件、不进循环，直接跑一次对应 prompt 后退出
     if args.once is not None:

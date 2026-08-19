@@ -123,6 +123,43 @@ def get_daily_indicators_history(days: int = 30) -> dict:
     return _get("/api/web/daily_indicators_history", {"days": days})
 
 
+# 获取全天异动时间轴（复盘用，支持增量拉取）
+def get_daily_summary(date: Optional[str] = None, since: Optional[str] = None) -> dict:
+    """
+    获取全天异动时间轴数据（按分析时间点聚合的题材行 + 个股动作）
+
+    入参：
+        date: str（可选，默认数据展示基准日）- 交易日期，格式 YYYY-MM-DD；
+            交易日盘前(<8:30)或非交易日时基准日为上一个交易日
+        since: str（可选，默认 None 全量）- 增量拉取游标，格式 HH:MM；
+            传入时仅返回 time >= since 的时间桶（含等于，便于接收最后一个时间桶的重写）；
+            frame_count 仍为全天总桶数，供校验合并结果是否断档
+
+    返回 -> dict（信封格式）：
+        data: {
+            "trade_date": str,              # 交易日期 YYYY-MM-DD
+            "status": str,                  # 落库状态
+            "error_message": str | None,    # 错误信息
+            "frame_count": int,             # 全天总桶数（since 裁剪不影响该值）
+            "total_duration_ms": int,       # 生成总耗时（毫秒）
+            "items": list[dict]             # 时间桶列表（按 time 升序），每项含：
+                #   time: str                      时间点 HH:MM
+                #   lines: list[dict]              题材行（每点 1~4 行），每项含：
+                #       theme: str                     题材名
+                #       text: str                      文案（个股名 + 动作描述）
+                #       direction: str                 方向：up/down/mixed
+                #       badge_map: dict[str, dict]     个股名 -> 徽标 {label, dir, code}
+        }
+        该日期无落库数据时返回 code=404
+    """
+    params = {}
+    if date:
+        params["date"] = date
+    if since:
+        params["since"] = since
+    return _get("/api/daily-summary", params)
+
+
 # ==================== 二、板块维度 ====================
 
 # 获取热点分类列表
@@ -583,7 +620,8 @@ def get_main_outflow_top() -> dict:
 def get_strategy_trend_stocks(
     strategy_id: int,
     mode: str = "",
-    limit: int = 30,
+    limit: int = 50,
+    with_intraday: bool = True,
 ) -> dict:
     """
     获取策略趋势股列表
@@ -614,10 +652,13 @@ def get_strategy_trend_stocks(
         mode: str（可选，默认 ""）- 数据模式
             ""           - 策略选股（默认）
             "amount_top" - 成交额排名前 N
-        limit: int（可选，默认 30）- 返回数量上限
+        limit: int（可选，默认 50）- 返回数量上限
+        with_intraday: bool（可选，默认 True）- 是否返回当日分时涨跌幅序列
+            纯列表选股场景传 False 可大幅减少响应体（分时数据占 90% 以上）
 
     返回 -> dict（信封格式）：
-        data: list[dict]，按选股生成时的原始顺序返回，每项含：
+        data: list[dict]，普通策略按当前实时涨跌幅降序取前 limit 只
+        （池子超 limit 时只展示当前最活跃个股；无实时行情的股票如停牌不返回），每项含：
             stock_code: str          - 股票代码
             stock_name: str          - 股票名称
             zdf: float               - 涨跌幅（%）
@@ -633,6 +674,7 @@ def get_strategy_trend_stocks(
         "strategy_id": strategy_id,
         "mode": mode,
         "limit": limit,
+        "with_intraday": with_intraday,
     })
 
 
@@ -945,7 +987,7 @@ def get_batch_stock_zdf(codes: str) -> dict:
 
 
 # 获取"今天炒什么"近 N 个交易日的事件列表
-def get_jtcsm_events(days: int = 1, limit: int = 30, include_detail: bool = True) -> dict:
+def get_jtcsm_events(days: int = 1, limit: int = 30, include_detail: bool = False) -> dict:
     """
     获取"今天炒什么"近 N 个交易日的事件列表（按热度倒序）
 
@@ -954,7 +996,7 @@ def get_jtcsm_events(days: int = 1, limit: int = 30, include_detail: bool = True
     入参：
         days: int（可选，默认 1）- 查询最近的交易日天数，范围 1-10
         limit: int（可选，默认 30）- 单日最大返回事件数，范围 1-100
-        include_detail: bool（可选，默认 True）- 是否附带事件摘要(summary)与关联个股(stocks)。
+        include_detail: bool（可选，默认 False）- 是否附带事件摘要(summary)与关联个股(stocks)。
             False 时仅返回概要（event_id/title/investment_direction/heat/trade_date/latest_stats），
             需要个股可另调 get_jtcsm_event_stocks 按需获取，减少冗余传输。
 
