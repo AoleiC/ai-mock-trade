@@ -34,6 +34,9 @@
     - .env 由 skills/mock/_http.py 基于 __file__ 推算加载，与 cwd 无关
     - 类型转换严格按方法签名的类型注解：stock_code（str）的 "603019" 保持字符串，
       strategy_id（int）的 "6" 转 int；dict/list 走 JSON；无注解时智能推断
+    - 字符串参数支持 `@路径` 文件引用：值以 `@` 开头且路径存在时，读文件原文作为参数值
+      （解决多行总结 / 长 JSON 在 shell 中转义被破坏的问题），如
+      `cli.py report.submit_summary watch @data/.watch_summary.txt`
     - 方法返回值原样 JSON 输出（保留 SDK 信封 {code,message,data} 契约）；返回 None 时输出 {"ok": true}
     - 任意异常输出结构化错误 JSON + 退出码非零，agent 可直接解析
 """
@@ -128,7 +131,7 @@ def _guess(value: str) -> object:
     return value
 
 
-# 把 `@path` 形式的字符串值展开为文件内容（仅在 _coerce 内复合类型分支里识别，避免误伤）
+# 把 `@path` 形式的字符串值展开为文件内容（在 _coerce 内对 str / dict / list 参数识别，避免误伤）
 def _expand_file_ref(value: str) -> str:
     """若 value 以 `@` 开头且后续路径存在文件，则读文件原文返回；否则原样返回。
 
@@ -154,9 +157,9 @@ def _coerce(value: str, annotation: object) -> object:
 
     返回 -> 转换后的值；无注解或未知注解时回退到 _guess 智能推断。
     """
-    # 复合类型（dict / list / 未知注解走 JSON 兜底）支持 `@path` 文件引用
+    # 复合类型（dict / list / 未知注解走 JSON 兜底）与 str（如 submit_summary 的多行总结文本）支持 `@path` 文件引用
     annotation_for_path = _unwrap_optional(annotation)
-    if annotation_for_path in (dict, list) or annotation_for_path is inspect.Parameter.empty:
+    if annotation_for_path in (dict, list, str) or annotation_for_path is inspect.Parameter.empty:
         value = _expand_file_ref(value)
     annotation = annotation_for_path
     # 无注解：智能推断
