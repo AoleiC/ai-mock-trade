@@ -353,6 +353,7 @@ def get_stock_info(stock_code: str) -> dict:
             "turn_z": float | None,     # 自由换手率（%）
             "value_z": float | None,    # 自由市值（元）
             "amount": float | None,     # 成交额（元）
+            "amount_main": float | None,     # 主力净额（元，教训 A.11 实测字段）；可能缺位（None），缺位时按总纲 §5.2 字段缺位处理，不作资金承接证据
             "hot_categories": list[str],     # 关联热点分类名称（可点击跳转）
             "hot_category_identities": dict, # 各热点分类对应的身份
                 # key: 热点名称（与 hot_categories 元素一一对应）
@@ -702,10 +703,10 @@ def get_hourly_hot_top(
     })
 
 
-# 获取近 11 个交易日的重点监控异动股名单（**禁买名单**）
+# 获取近 11 个交易日交易所重点监管股票名单（**禁买名单**）
 def get_key_watch_stocks() -> dict:
     """
-    获取近 11 个交易日的重点监控异动股名单（**禁买名单**）
+    获取近 11 个交易日交易所重点监管股票名单（**禁买名单**）
 
     数据来源：daily_unusual_fluctuate 表（东方财富 RPT_WATCH_UNUSUAL_FLUCTUATE），
     同时取已发生的严重异动（is_happen=1）与即将发生的预期异动（is_happen=0）。
@@ -881,7 +882,7 @@ def get_intraday_analysis() -> dict:
     ====== FinalDict（final_analysis）—— agent 决策核心 =====
         {
             "market_overview": str,                        # 盘面综述（其中引用的仓位数值已与 position_limit 落库值一致）
-            "sentiment_capital_alignment": str,            # 共振/警惕/撤退
+            "sentiment_capital_alignment": str,            # 共振/虚热/强撑/退潮
             "attack_directions": [DirectionDict, ...],     # 本期确认的进攻方向（**主用**）
             "retreat_directions": [DirectionDict, ...],    # 本期确认的撤退方向（**主用**）
             "observe_directions": [DirectionDict, ...],    # 观察方向（未达门槛的苗头，待确认；系统不自动买卖，但需提示用户随机应变）
@@ -957,7 +958,7 @@ def get_intraday_analysis() -> dict:
         data["sentiment_analysis"]["sentiment_label"]               # 短线情绪（仓位主锚）
         data["final_analysis"]["position_limit"]                    # 当日仓位上限（必用）
         data["final_analysis"]["position_reasoning"]               # 仓位理由（日志）
-        data["final_analysis"]["sentiment_capital_alignment"]       # 共振/警惕/撤退
+        data["final_analysis"]["sentiment_capital_alignment"]       # 共振/虚热/强撑/退潮
         data["final_analysis"]["action_advice"]                    # 操作建议（必读）
         data["final_analysis"]["risk_warnings"]                    # 风险提示列表
         data["final_analysis"]["attack_directions"]                # 进攻方向

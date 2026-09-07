@@ -139,7 +139,32 @@ cli.py read_daily_summary --date 2026-07-04
 
 ---
 
-## 五、常见调用组合
+## 五、市场阶段状态机（裁决层执行权威）
+
+读写 `data/regime-state.json`（滚动单文件，原子覆盖写，不按日清理）。转移规则人审表述见 `memory/strategies/00-regime-machine.md`，**执行唯一权威是本节三个方法**，agent 只读输出、禁止手工推演转移表。
+
+| 函数 | 用途 | 必填 |
+|------|------|------|
+| `read_regime_state(trade_date=None)` | 盘中每轮第 0 步读当前阶段 + 试错通道资格（A/A2/B 共用）+ 陈旧/长假防御检测 | — |
+| `regime_advance(trade_date, s, d=None)` | 手工补推进一个交易日（保留工具；常态推进由盘中自愈 `regime_rebuild` 承担，复盘不再推进；s 缺值传 None 走缺数日规则） | `trade_date` / `s` |
+| `regime_rebuild(raw: dict, write_back=False, before_date=None)` | 从 `get_daily_indicators_history` 返回结构纯函数重放重建（支持信封自动解包；`before_date` 只重放该日之前，盘中自愈必传当日） | `raw` |
+
+**示例**：
+```bash
+# 盘中读（defensive_reason 非空或 code != 200 → 当日按防守处理并记录）
+cli.py read_regime_state --trade_date 2026-09-07
+
+# 盘后推进（s 为当日收盘短线温度定格值；d 仅落库不进转移条件）
+cli.py regime_advance 2026-09-04 15 30
+cli.py regime_advance 2026-09-05 None 30     # s 缺值日
+
+# 重建（raw 支持 @文件引用与整个接口信封；write_back=true 才写回状态文件）
+cli.py regime_rebuild --raw @/tmp/history.json --write_back true
+# 盘中自愈：--before_date 传当日，排除当日盘中临时值，只重放到最近已完成交易日
+cli.py regime_rebuild --raw '<接口返回JSON>' --write_back true --before_date 2026-09-07
+```
+
+## 六、常见调用组合
 
 ```python
 # 盘前 / 盯盘：读取昨日复盘 + 当前策略 + 今日日志
@@ -162,7 +187,7 @@ write_watchlist({"main_line": "算力/芯片", "stocks": [...]}, date="2026-07-0
 
 ---
 
-## 六、调试
+## 七、调试
 
 import 自检（`cwd = 项目根目录`，供人类开发者用）：
 

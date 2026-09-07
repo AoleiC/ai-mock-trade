@@ -5,9 +5,9 @@
 每个交易日 21:00 触发一次「复盘今天的行情数据」。非交易时段脚本只 sleep 不消耗资源。
 
 每次启动时会先自动检查并升级 skills 模块（调用 tool.py update skills，版本门禁 +
-缓存复用，同版本重复启动不占下载配额；失败只告警不阻塞启动），随后清理 data 目录中
-前天及更早的按日归档文件（trade-log / daily-summary / watchlist / 盯盘 txt / 调度器日志），
-仅保留昨天与今天两天的数据。
+缓存复用，同版本重复启动不占下载配额；失败只告警不阻塞启动），随后分层清理按日归档文件：
+盯盘 / 调度器日志与盯盘 txt 保留 2 个自然日（早清理），trade-log / daily-summary（含方向
+轮动台账）/ watchlist 等落地 json 保留 10 个自然日（盘中再分歧判定依赖昨日台账，长留兜底）。
 
 支持的环境变量（也提供同名 CLI 参数，CLI 参数优先）：
   WATCH_CLI              AI CLI 名称，可选 opencode | claude，默认 opencode
@@ -49,6 +49,12 @@ MORNING_START = (9, 30)
 MORNING_END = (11, 30)
 AFTERNOON_START = (13, 0)
 AFTERNOON_END = (15, 0)
+
+# 日志类保留窗口（自然日）：盯盘 run-*.log / 调度器 scheduler-*.log / data 目录下的盯盘 txt 等过程文件，体量大、早清理
+LOG_RETENTION_DAYS = 2
+# 落地数据保留窗口（自然日）：data 目录下的按日 json（trade-log / daily-summary 含方向轮动台账 / watchlist），
+# 是盘中判定的依赖与复盘回溯的资产，保留更长；台账为滚动累计字段，盘中判定只需昨日一份，长窗口仅作冗余兜底
+DATA_RETENTION_DAYS = 10
 
 
 def parse_args() -> argparse.Namespace:
@@ -181,16 +187,19 @@ def _date_from_filename(name: str) -> dt.date | None:
 
 # 启动前清理旧日志
 def cleanup_old_logs(data_dir: Path, log_dir: Path, logger: logging.Logger) -> None:
-    """启动前清理旧日志：删除归档日期 <= 前天的按日文件，仅保留最近两天（昨天 + 今天）。
+    """启动前分层清理旧文件：日志类早清（保留 2 个自然日），落地数据长留（保留 10 个自然日）。
 
-    清理范围:
-        - data_dir（默认 <项目根>/data）: trade-log-*.json / daily-summary-* / watchlist-*.json / 盯盘 txt
-        - log_dir（默认 <项目根>/data/watch_scheduler_logs）: scheduler-*.log / run-*.log
-
-    说明: 删除「前天及更早」而非「恰好前天」，保证调度器间隔多日启动时旧文件不残留。
+    清理范围与窗口:
+        - 日志类（保留 LOG_RETENTION_DAYS=2 天）: log_dir 下全部文件（scheduler-*.log / run-*.log）
+          + data_dir 下的非 json 文件（盯盘 txt 等过程文件）——体量大、无回溯价值，早清理
+        - 落地数据类（保留 DATA_RETENTION_DAYS=10 天）: data_dir 下的按日 .json
+          （trade-log-* / daily-summary-*（含方向轮动台账）/ watchlist-*）——盘中"再分歧退潮预警"
+          判定依赖昨日台账，10 天窗口覆盖周末 / 节假日跨度并留足复盘回溯余地
+        - 均删除「截止日前及更早」而非「恰好截止日」，保证调度器间隔多日启动时旧文件不残留
     """
-    # 前天（含）之前的文件都删，保留昨天与今天
-    cutoff = dt.date.today() - dt.timedelta(days=2)
+    # 两个截止日：日志类早清、落地数据长留
+    log_cutoff = dt.date.today() - dt.timedelta(days=LOG_RETENTION_DAYS)
+    data_cutoff = dt.date.today() - dt.timedelta(days=DATA_RETENTION_DAYS)
 
     deleted = 0
     # 两个目录都只扫顶层文件，不递归；watch_scheduler_logs 作为子目录会被 is_file() 跳过
@@ -201,18 +210,26 @@ def cleanup_old_logs(data_dir: Path, log_dir: Path, logger: logging.Logger) -> N
             if not file.is_file():
                 continue
             file_date = _date_from_filename(file.name)
-            # 无法识别日期（.keep 等）或晚于截止日的文件跳过
-            if file_date is None or file_date > cutoff:
+            # 无法识别日期（.keep / pid 等）或晚于截止日的文件跳过
+            if file_date is None:
+                continue
+            # data 目录下的按日 json 属落地数据（台账 / 交易日志 / 自选池），用长窗口；
+            # 其余（txt 等过程文件）与日志目录统一用短窗口
+            cutoff = data_cutoff if (directory == data_dir and file.suffix == ".json") else log_cutoff
+            if file_date > cutoff:
                 continue
             try:
                 file.unlink()
                 deleted += 1
-                logger.debug("已删除旧日志: %s", file)
+                logger.debug("已删除旧文件: %s", file)
             except OSError as exc:
-                logger.warning("删除旧日志失败: %s, err=%s", file, exc)
+                logger.warning("删除旧文件失败: %s, err=%s", file, exc)
     logger.info(
-        "旧日志清理完成: 截止日期<=%s(前天), 扫描目录=[%s, %s], 删除文件数=%d",
-        cutoff,
+        "旧文件分层清理完成: 日志截止<=%s(%d天), 落地数据截止<=%s(%d天), 扫描目录=[%s, %s], 删除文件数=%d",
+        log_cutoff,
+        LOG_RETENTION_DAYS,
+        data_cutoff,
+        DATA_RETENTION_DAYS,
         data_dir,
         log_dir,
         deleted,
@@ -345,7 +362,11 @@ def run_cli(
     - stderr 同时落盘到 run-*.log，失败时优先看文件
     - 调度器自己的状态行走 logger（INFO 一行自包含，INFO/ERROR 分级清晰）
     - 收到 stop 请求：先 SIGTERM 礼貌请退，2 秒不退就 SIGKILL 强杀
+    - prompt 注入权威当前时间：模型无内置时钟，不注入则总结标记 / 摘要行的时间
+      会被模型臆造（曾出现 09:53 触发的轮次写出 14:12 的幻觉时间戳）
     """
+    # 注入当前时间作为权威时间源：agent 输出的盯盘/复盘总结标记与摘要行时间必须逐字采用此值
+    prompt = f"{prompt}（当前时间 {dt.datetime.now():%Y-%m-%d %H:%M:%S}，输出中的总结标记与摘要行时间必须逐字采用此值）"
     cmd = build_command(cli, prompt, project_dir)
     log_file = log_dir / f"run-{dt.datetime.now():%Y%m%d-%H%M%S}.log"
 
@@ -540,7 +561,7 @@ def main() -> int:
     # 启动前自动检查并升级 skills（版本门禁 + 缓存复用；失败不阻塞启动，--once 模式同样生效）
     auto_upgrade_skills(args.project_dir, logger)
 
-    # 启动前清理前天及更早的旧日志（data 目录 + 调度器日志目录），防止运行时数据无限膨胀
+    # 启动前分层清理旧文件（日志类早清、台账等落地 json 长留），防止运行时数据无限膨胀，见 cleanup_old_logs 说明
     cleanup_old_logs(args.project_dir / "data", args.log_dir, logger)
 
     # 单次执行模式：不写 PID 文件、不进循环，直接跑一次对应 prompt 后退出
