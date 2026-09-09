@@ -12,17 +12,18 @@
 
 示例：
     # 无参方法
-    python skills/journal/cli.py read_trade_log
-    python skills/journal/cli.py read_watchlist
-    python skills/journal/cli.py read_daily_summary
+    python skills/journal/cli.py read_regime_state
     python skills/journal/cli.py read_dynamic_strategy
 
-    # 位置参数（按方法签名类型注解自动转换：str/int/float）
-    python skills/journal/cli.py append_trade_action buy 603019 中科曙光 45.0 100 "主线龙头符合买点"
-
     # 具名参数（覆盖默认值；支持 --key value 与 --key=value 两种写法）
-    python skills/journal/cli.py read_trade_log --date 2026-07-06
-    python skills/journal/cli.py append_emotion_snapshot 主升 65 5 AI算力 --extra='{"note":"放量"}'
+    python skills/journal/cli.py read_regime_state --trade_date 2026-09-09
+    python skills/journal/cli.py write_dynamic_strategy --content '...'
+
+    # 市场阶段状态机（转移规则唯一执行权威；详细契约见 memory/strategies/00-regime-machine.md）
+    python skills/journal/cli.py read_regime_state                      # 盘中第 0 步读当日生效阶段
+    python skills/journal/cli.py read_regime_state --trade_date 2026-09-09
+    python skills/journal/cli.py regime_advance 2026-09-09 55 45       # 手工补推进（保留工具；常态由盘中自愈承担，s 缺数日传 None）
+    python skills/journal/cli.py regime_rebuild --raw @raw.json --write_back true --before_date 2026-09-09
 
 约定：
     - 工作区根 = 项目根目录（脚本所在的最外层目录）；本文件位于 skills/journal/cli.py，启动时自动把项目根目录注入 sys.path
@@ -63,17 +64,15 @@ _USAGE = """journal skill 通用方法调用器（总结与写文档）
     python skills/journal/cli.py --list          列出全部可用方法
     python skills/journal/cli.py --help          打印本说明
 
-模块白名单: journal（交易日志 / 自选池 / 复盘总结 / 动态策略 的本地读写）
+模块白名单: journal（市场阶段状态机 / 动态策略 的本地读写）
 
 示例:
-    python skills/journal/cli.py read_trade_log
-    python skills/journal/cli.py read_watchlist
-    python skills/journal/cli.py read_daily_summary
+    python skills/journal/cli.py read_regime_state
+    python skills/journal/cli.py read_regime_state --trade_date 2026-09-09
     python skills/journal/cli.py read_dynamic_strategy
-    python skills/journal/cli.py read_trade_log --date 2026-07-06
-    python skills/journal/cli.py append_trade_action buy 603019 中科曙光 45.0 100 "主线龙头符合买点"
-    python skills/journal/cli.py append_emotion_snapshot 主升 65 5 AI算力 --extra='{"note":"放量"}'
     python skills/journal/cli.py write_dynamic_strategy --content '...'
+    python skills/journal/cli.py regime_advance 2026-09-09 55 45    # s 缺数日传 None
+    python skills/journal/cli.py regime_rebuild --raw @raw.json --write_back true --before_date 2026-09-09
 
 类型转换: 按方法签名类型注解自动转换（str/int/float/bool/dict/list）。
 输出: 方法返回值 JSON；异常输出结构化错误 JSON 且退出码非零。

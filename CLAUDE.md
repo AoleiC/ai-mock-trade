@@ -77,7 +77,6 @@
 | 嵌套路径 | 含义 | 决策角色 |
 |----------|------|----------|
 | `sentiment_label` | 短线情绪（激进/偏激进/中性/偏保守/保守） | **开仓触发的核心字段**（策略开仓过滤） |
-| `confidence` | LLM 置信度（高/中/低） | 输出标注"置信度:X"；**不**调档、**不**禁开仓 |
 | `sentiment_score` | 短线情绪分值（0-100） | **策略层状态机输入**（收盘序列消费，规则固化于 `00-regime-machine.md` 与 journal 代码；盘中单点值仅战法一尾盘回升确认用）+ 日志展示 |
 | `reasoning` | 推理原文 | 仅供日志 / 解释 |
 | `divergence_type` | 分歧性质（良性分歧/恶性退潮/一致加速/无分歧） | **方向定性的辅助参考**：良性分歧时攻击方向回踩算观察机会、恶性退潮加强防守；仅供视野参考，不调档不禁仓（已折算进 observe_directions 归类） |
@@ -131,7 +130,7 @@
 | 买点形态确认 | `cli.py market.get_daily_k_data <code>` | 突破 / 多头排列 / 多日量价 |
 | 选股（六池合并） | `cli.py market.get_strategy_trend_stocks 6/10/7` + `get_main_inflow_top` + `get_amount_top` + `get_hourly_hot_top` | **选股条件触发时**按需拉（六池全拉合并去重，主力 / 成交额 / 热度榜来源补验趋势形态，策略选股筛选） |
 | 下单 / 撤单 / 查委托 | `cli.py trading.buy/sell/cancel` | 写操作，参数调用前校验 |
-| 交易日志 / 自选池 / 复盘总结 | `python skills/journal/cli.py <method>` | 本地状态读写 |
+| 动态策略读写 | `python skills/journal/cli.py <method>` | 本地状态读写 |
 | 市场阶段状态机 | `cli.py journal.read_regime_state --trade_date <当日>`（盘中读）/ `journal.regime_rebuild --raw '<JSON>' --write_back true --before_date <当日>`（盘中自愈重建） | 盘中第 0 步（**落后 / 缺失即自愈，不限次数**；契约见 `memory/strategies/00-regime-machine.md`） |
 | 盯盘 / 复盘总结上报后台 | `cli.py report.submit_summary watch/review "<文本>"` | 每轮输出后、复盘产出后（失败即忽略，不重试） |
 
@@ -204,7 +203,6 @@
 |------|----------|------|
 | 持仓止损止盈（策略止损止盈 + 加速止盈分时四信号） | **照常执行** | 只依赖个股价格、分时、持仓，不依赖今日盘面 LLM；开盘秒杀 / 极端行情的止损保护不能丢 |
 | 盘中临时选股开仓（六池候选 + 买点判定） | **跳过** | 仓位上限 / 情绪资格 / 活跃方向 / 买点方向归属全来自今日 LLM，缺位无法判定 |
-| 昨日自选池（watchlist） | **已停用** | 复盘不做推演，不再产出自选池（§7.2）；历史文件若存在仅作回溯参考，不构成任何买入依据 |
 | LLM 撤退方向清仓 | **跳过** | 无今日 `retreat_directions`；持仓风险改由个股自身止损信号兜底 |
 | 选股（六池） | **跳过** | 无活跃方向归属，买点判定失去方向前提 |
 
@@ -270,15 +268,14 @@
 1. **全局判定**（必做）：先按 §3.1 取齐 5 项必读数据——**第 0 步读 regime-state 确认当日生效阶段与允许行为**（开仓资格四层 AND 叠加的市场层，矩阵见策略通用层；`code != 200` 或 `defensive_reason` 非空 → 当日按防守处理并记录）；读盘面分析确认 `status` / `final_analysis` 存在；读 `market_overview`（必读）+ `position_limit` + `action_advice`；读 `sentiment_label` + `sentiment_capital_alignment`；按策略开仓过滤判定开仓资格（当日层）；识别活跃方向 / 撤退方向；检查持仓是否落入撤退方向；**不以偏概全**（§5.5）；检查实际仓位是否超 `position_limit`。
 2. **候选校验**（条件触发）：选股条件触发时按需拉六池（§3.4），在合并候选集上剔除撤退方向 / 已涨停（按板块区分阈值）/ 交易所重点监管禁买名单 / 四类股，判定买点（策略选股筛选）。无可买标的 → 输出"无候选"，**不中断**后续检查。
 3. **持仓复核**（必做）：先按 `available_volume` 过滤——当日买入（可卖量 0）的持仓跳过盘中卖出导向分析、仅标注"今日买入 T+1 不可卖"（§3.3）；对每只**可卖持仓**（`available_volume > 0`）**按需另取分时 + 主力**（§3.3 硬纪律），按策略判加速止盈四信号；对照策略止损止盈检查。
-4. **交易**（条件触发）：同时满足全部条件才可买入（买点 / 仓位上限 / 单只与同方向上限 / 撤退方向清仓 / 开仓触发指标，阈值见策略，红线见心法）；触发止损止盈则卖出，否则无操作。执行后调 `journal.append_trade_action` 记录。
+4. **交易**（条件触发）：同时满足全部条件才可买入（买点 / 仓位上限 / 单只与同方向上限 / 撤退方向清仓 / 开仓触发指标，阈值见策略，红线见心法）；触发止损止盈则卖出，否则无操作。**操作与理由直接写进盯盘总结正文与摘要行**（调度器自动归档进 `watch-summary-{date}.md`，§10.1）。
 5. **输出摘要**（必做）：一行摘要，无操作也要输出（规范见 §八）。
 
 ### 7.2 盘后（review）
 
 无强制顺序，按需执行。**复盘不做推演、不做选股、不推进状态机**：只分析今日操作与不操作（状态机推进由盘中第 0 步自愈承担，§3.1；次日机会由通道 D（[板块]连强 2 日尾盘先手，策略 `40` §二C）承接，emerging 首日进榜为其前瞻观察输入）。
 
-1. **复盘与反思**（**旁观者视角，只覆盖"今日"**）：调 `market` 取大盘 / 历史 / 热点，读 `data/trade-log-{date}.json`；记录 LLM 字段快照作为情绪快照；核心回答四个问题——**买卖点是否正确正常？行情好时为何一直不开仓？行情不好时为何开仓？仓位是否合理？**——外加合规性检查（总仓位 vs `position_limit`、单只 ≤30%、同方向 ≤50%、已撤退方向 =0）与纪律执行情况、可复用经验、操作策略优化空间；写入 `data/daily-summary-{date}.json`（`reflection` / `strategy_changes`）；**不自动改写** `memory/dynamic-strategy.md` 与战法分册。
-2. **事实记录（记录 ≠ 推演，不可省略）**：① 把当日各方向的阶段与**连续强势天数**（昨日仍强则 +1，走弱 / 撤退归零）写入 `daily-summary` 的 `next_day_plan.rotation_ledger`（字段名沿用历史结构，内容仅事实记录）——这是策略 §2.3 再分歧量化判定的唯一权威数据源（"此前已连续强势 ≥2 日"的前提），缺失会导致退潮预警永久降级为普通分歧处理；② 落库 `regime_track`（当日双温度定格、当日生效状态、当日操作与状态机预期的对照标注——"操作与不操作分析"的结构化落库，结构见策略通用层复盘流程；当日 s/d 定格值取自 `get_daily_indicators_history` 当日行，状态字段取盘中 `read_regime_state` 的实际读数）。两者均**不含**预期接力方向、次日安排等任何推演内容。
+**复盘与反思**（**旁观者视角，只覆盖"今日"**）：调 `market` 取大盘 / 历史 / 热点，读 `data/watch-summary-{date}.md`（全天盯盘总结时间线，含每轮完整判定理由与操作，是复盘还原"当时怎么想"的唯一权威源）；核心回答四个问题——**买卖点是否正确正常？行情好时为何一直不开仓？行情不好时为何开仓？仓位是否合理？**——外加合规性检查（总仓位 vs `position_limit`、单只 ≤30%、同方向 ≤50%、已撤退方向 =0）与纪律执行情况、可复用经验、操作策略优化空间；反思内容写进**复盘总结输出本身**（调度器自动归档 `review-summary-{date}.md`，§10.1）；**不自动改写** `memory/dynamic-strategy.md` 与战法分册。
 
 ---
 
@@ -299,20 +296,20 @@
 ### 一行摘要行
 
 ```
-[柚子 AI] HH:MM | 盯盘 | 阶段:X | 情绪:X | 置信度:X | 活跃:XX | 仓位:NN% | 操作:XX | 持仓:NN只
+[柚子 AI] HH:MM | 盯盘 | 阶段:X | 情绪:X | 活跃:XX | 仓位:NN% | 操作:XX | 持仓:NN只
 ```
 
 **字段值直接采用 LLM / 状态机返回值，禁止自创**（§5.1）：
 - **时间 HH:MM** = 调度指令注入的「当前时间」（未注入时 `date` 实测），与盯盘总结标记同源（见上方「时间取值」硬红线）
 - **阶段** = 按 `read_regime_state` 输出的 `current_state` **枚举值**查固定映射表翻译：`defense→退潮期 / ice_point→冰点期 / uptrend_ready→回暖确认期 / uptrend→高潮期 / oscillation→退潮分歧期`（**以枚举翻译为准、不直接采用 `state_label` 字面值**——skills 官方包自更新可能返回旧标签字面值，枚举值是稳定契约）；读取失败 / `defensive_reason` 非空按退潮期处理时输出"退潮期（状态读取异常）"
-- **情绪标签** = `sentiment_label`；**仓位** = `position_limit`；**活跃** = `final_analysis.attack_directions[0].direction`；**置信度** = `confidence`
+- **情绪标签** = `sentiment_label`；**仓位** = `position_limit`；**活跃** = `final_analysis.attack_directions[0].direction`
 - LLM 字段缺位 → 写"该字段为空，无法判定"
 
 摘要行示例：
 
 ```
-[柚子 AI] 14:30 | 盯盘 | 阶段:主升 | 情绪:偏激进 | 置信度:中 | 活跃:AI算力全产业链 | 仓位:65% | 操作:买入工业富联 | 持仓:2只
-[柚子 AI] 11:15 | 盯盘 | 阶段:防守 | 情绪:中性 | 置信度:中 | 活跃:AI算力 | 持仓:2只 | 无操作
+[柚子 AI] 14:30 | 盯盘 | 阶段:主升 | 情绪:偏激进 | 活跃:AI算力全产业链 | 仓位:65% | 操作:买入工业富联 | 持仓:2只
+[柚子 AI] 11:15 | 盯盘 | 阶段:防守 | 情绪:中性 | 活跃:AI算力 | 持仓:2只 | 无操作
 ```
 
 > 复盘输出与盯盘对称：由「复盘总结标记」起头，后接 3 个结构化板块（当日盈亏 / 情绪演变 / 操作反思）+ 一行摘要行；**不**输出"复盘开始/复盘结束"边界。完整细则见策略输出规范。
@@ -337,9 +334,8 @@
 | 文件 | 用途 | 写入时机 |
 |------|------|----------|
 | `data/regime-state.json` | 市场阶段状态机（当前阶段 / 聚簇 / 计数 / 通道资格，滚动单文件，不参与按日清理） | 盘中自愈（`regime_rebuild --write_back true --before_date <当日>`；复盘不推进） |
-| `data/trade-log-{date}.json` | 交易日志（操作 + 情绪快照） | 每次操作后 |
-| `data/watchlist-{date}.json` | ~~自选池~~（已停用：复盘不做推演、不再产出，§7.2） | — |
-| `data/daily-summary-{date}.json` | 复盘总结（盈亏、反思、方向事实记录 rotation_ledger、regime_track） | 盘后复盘后 |
+| `data/watch-summary-{date}.md` | 全天盯盘总结时间线（每轮总结全文追加，含完整判定理由与操作；复盘还原"当时怎么想"的唯一权威源） | 每轮盯盘后由调度器自动从 run log 提取归档（agent 零成本，无需调用） |
+| `data/review-summary-{date}.md` | 复盘总结全文（当日盈亏 / 情绪演变 / 操作反思） | 复盘结束后由调度器自动提取归档 |
 
 ### 10.2 目录结构
 
@@ -370,13 +366,12 @@
 │   │   └── cli.py                     # 通用方法调用器
 │   └── journal/                       # 本地状态读写
 │       ├── SKILL.md                   # 索引型入口
-│       ├── journal.py                 # 交易日志 / 自选池 / 复盘总结 / 阶段状态机
+│       ├── journal.py                 # 阶段状态机 / 动态策略
 │       └── cli.py                     # 通用方法调用器
 ├── data/                              # 运行时数据（按日归档，git 忽略；regime-state.json 滚动不清）
 │   ├── regime-state.json
-│   ├── trade-log-{date}.json
-│   ├── watchlist-{date}.json
-│   └── daily-summary-{date}.json
+│   ├── watch-summary-{date}.md        # 盯盘总结时间线（调度器归档）
+│   └── review-summary-{date}.md       # 复盘总结（调度器归档）
 └── backups/                           # 更新备份与缓存（tool.py 生成，git 忽略）
 ```
 
@@ -392,7 +387,7 @@
 - 战法分册：`memory/strategies/10~40-*.md`
 - 通用层策略：`memory/dynamic-strategy.md`
 - SDK：`skills/mock/*.py`（接口调用）、`skills/journal/*.py`（本地状态读写）
-- 数据：`data/*.json`
+- 数据：`data/*.json` / `data/*.md`
 
 **禁止读取** `~/.claude/CLAUDE.md`、`~/.config/opencode/`、用户家目录 `~/` 等项目外路径 —— 它们不在本项目工作目录内，读取会触发 `external_directory` 权限拦截（headless `run` 模式无法交互确认 → 自动拒绝并报错），且与本系统无关。
 

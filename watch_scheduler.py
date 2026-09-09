@@ -6,8 +6,12 @@
 
 每次启动时会先自动检查并升级 skills 模块（调用 tool.py update skills，版本门禁 +
 缓存复用，同版本重复启动不占下载配额；失败只告警不阻塞启动），随后分层清理按日归档文件：
-盯盘 / 调度器日志与盯盘 txt 保留 2 个自然日（早清理），trade-log / daily-summary（含方向
-轮动台账）/ watchlist 等落地 json 保留 10 个自然日（盘中再分歧判定依赖昨日台账，长留兜底）。
+盯盘 / 调度器日志与盯盘 txt 保留 2 个自然日（早清理），watch-summary / review-summary
+总结归档保留 10 个自然日（复盘回溯依赖当日盯盘总结时间线，长留兜底）。
+
+每轮盯盘 / 复盘结束后，调度器自动从 run-*.log 提取「盯盘总结 / 复盘总结」全文块，
+按日追加落盘 data/watch-summary-{date}.md / data/review-summary-{date}.md ——
+这是全天决策时间线的唯一权威归档（含每轮完整理由与操作），复盘据此还原当日判定。
 
 支持的环境变量（也提供同名 CLI 参数，CLI 参数优先）：
   WATCH_CLI              AI CLI 名称，可选 opencode | claude，默认 opencode
@@ -52,9 +56,17 @@ AFTERNOON_END = (15, 0)
 
 # 日志类保留窗口（自然日）：盯盘 run-*.log / 调度器 scheduler-*.log / data 目录下的盯盘 txt 等过程文件，体量大、早清理
 LOG_RETENTION_DAYS = 2
-# 落地数据保留窗口（自然日）：data 目录下的按日 json（trade-log / daily-summary 含方向轮动台账 / watchlist），
-# 是盘中判定的依赖与复盘回溯的资产，保留更长；台账为滚动累计字段，盘中判定只需昨日一份，长窗口仅作冗余兜底
+# 落地数据保留窗口（自然日）：data 目录下的总结归档（watch-summary / review-summary 时间线），
+# 是复盘回溯的资产，比日志类保留更长
 DATA_RETENTION_DAYS = 10
+
+# 总结归档文件名前缀 -> 对应 agent 输出中的总结标记关键字
+_SUMMARY_ARCHIVE_MAP = {
+    "盯盘总结": "watch-summary",
+    "复盘总结": "review-summary",
+}
+# PTY 输出携带的 ANSI 转义序列（颜色 / 光标控制），落盘前剥离
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -162,7 +174,7 @@ def setup_logger(log_dir: Path) -> logging.Logger:
 
 
 # 旧日志清理用：从按日归档文件名提取日期的正则（ISO 与紧凑两种格式）
-_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")  # 匹配 2026-08-15，如 trade-log-2026-08-15.json
+_ISO_DATE_RE = re.compile(r"(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)")  # 匹配 2026-08-15，如 watch-summary-2026-08-15.md
 _COMPACT_DATE_RE = re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})(?!\d)")  # 匹配 20260815，如 run-20260815-101530.log
 
 
@@ -171,7 +183,7 @@ def _date_from_filename(name: str) -> dt.date | None:
     """从文件名提取归档日期，兼容 ISO（2026-08-15）与紧凑（20260815）两种格式。
 
     参数:
-        name: 文件名（不含目录），如 trade-log-2026-08-15.json、run-20260815-101530.log
+        name: 文件名（不含目录），如 watch-summary-2026-08-15.md、run-20260815-101530.log
     返回:
         提取成功返回对应 date；文件名不含可识别日期（如 .keep）返回 None
     """
@@ -185,16 +197,55 @@ def _date_from_filename(name: str) -> dt.date | None:
         return None
 
 
+# 每轮结束后把 agent 输出中的总结块归档到按日 md 文件
+def archive_summary(log_file: Path, data_dir: Path, logger: logging.Logger) -> None:
+    """从本轮 run-*.log 提取「盯盘总结 / 复盘总结」全文块，追加到按日归档 md。
+
+    归档文件:
+        data/watch-summary-{date}.md   每轮盯盘总结追加（全天决策时间线，复盘据此还原判定）
+        data/review-summary-{date}.md  复盘总结全文
+    提取规则:
+        取 log 中最后一个总结标记（========== 盯盘总结 / 复盘总结 ==========）到文件末尾，
+        剥离 ANSI 转义与 \\r；无任何标记（本轮失败 / 休市轮）则跳过。
+    容错：任何异常只告警不抛出，绝不影响调度主循环。
+    """
+    try:
+        raw = log_file.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        logger.warning("总结归档读取失败: %s, err=%s", log_file.name, exc)
+        return
+    text = _ANSI_RE.sub("", raw).replace("\r\n", "\n").replace("\r", "\n")
+    # 找最后一个总结标记（盯盘 / 复盘两种），取更靠后的那个作为本轮产出
+    best_pos, best_kind = -1, None
+    for marker, kind in _SUMMARY_ARCHIVE_MAP.items():
+        pos = text.rfind(f"========== {marker}")
+        if pos > best_pos:
+            best_pos, best_kind = pos, kind
+    if best_kind is None:
+        logger.info("总结归档跳过: 本轮输出无总结标记, log=%s", log_file.name)
+        return
+    block = text[best_pos:].strip()
+    if not block:
+        return
+    archive = data_dir / f"{best_kind}-{dt.date.today().isoformat()}.md"
+    try:
+        with open(archive, "a", encoding="utf-8") as fh:
+            fh.write(block + "\n\n")
+        logger.info("总结归档完成: %s <- %s (%d 字符)", archive.name, log_file.name, len(block))
+    except OSError as exc:
+        logger.warning("总结归档写入失败: %s, err=%s", archive, exc)
+
+
 # 启动前清理旧日志
 def cleanup_old_logs(data_dir: Path, log_dir: Path, logger: logging.Logger) -> None:
     """启动前分层清理旧文件：日志类早清（保留 2 个自然日），落地数据长留（保留 10 个自然日）。
 
     清理范围与窗口:
         - 日志类（保留 LOG_RETENTION_DAYS=2 天）: log_dir 下全部文件（scheduler-*.log / run-*.log）
-          + data_dir 下的非 json 文件（盯盘 txt 等过程文件）——体量大、无回溯价值，早清理
-        - 落地数据类（保留 DATA_RETENTION_DAYS=10 天）: data_dir 下的按日 .json
-          （trade-log-* / daily-summary-*（含方向轮动台账）/ watchlist-*）——盘中"再分歧退潮预警"
-          判定依赖昨日台账，10 天窗口覆盖周末 / 节假日跨度并留足复盘回溯余地
+          + data_dir 下的非落地文件（盯盘 txt 等过程文件）——体量大、无回溯价值，早清理
+        - 落地数据类（保留 DATA_RETENTION_DAYS=10 天）: data_dir 下的总结归档 md
+          （watch-summary-* / review-summary-*）——复盘回溯依赖当日盯盘总结时间线，
+          10 天窗口覆盖周末 / 节假日跨度并留足复盘回溯余地
         - 均删除「截止日前及更早」而非「恰好截止日」，保证调度器间隔多日启动时旧文件不残留
     """
     # 两个截止日：日志类早清、落地数据长留
@@ -213,9 +264,10 @@ def cleanup_old_logs(data_dir: Path, log_dir: Path, logger: logging.Logger) -> N
             # 无法识别日期（.keep / pid 等）或晚于截止日的文件跳过
             if file_date is None:
                 continue
-            # data 目录下的按日 json 属落地数据（台账 / 交易日志 / 自选池），用长窗口；
+            # data 目录下的总结归档 md 属落地数据，用长窗口；
             # 其余（txt 等过程文件）与日志目录统一用短窗口
-            cutoff = data_cutoff if (directory == data_dir and file.suffix == ".json") else log_cutoff
+            is_archived = file.name.startswith(("watch-summary-", "review-summary-"))
+            cutoff = data_cutoff if (directory == data_dir and is_archived) else log_cutoff
             if file_date > cutoff:
                 continue
             try:
@@ -479,6 +531,10 @@ def run_cli(
             _terminate_process(process)
         return False
 
+    # 本轮产出归档：提取总结块追加到 data/watch-summary|review-summary-{date}.md
+    # 放在 CLI try/except 之外：归档自身的异常不得误报为 CLI 执行失败（函数内部已全容错）
+    archive_summary(log_file, project_dir / "data", logger)
+
     print(f"========== 盯盘结束 {dt.datetime.now():%H:%M:%S} ==========\n", flush=True)
 
     if result == 0:
@@ -561,7 +617,7 @@ def main() -> int:
     # 启动前自动检查并升级 skills（版本门禁 + 缓存复用；失败不阻塞启动，--once 模式同样生效）
     auto_upgrade_skills(args.project_dir, logger)
 
-    # 启动前分层清理旧文件（日志类早清、台账等落地 json 长留），防止运行时数据无限膨胀，见 cleanup_old_logs 说明
+    # 启动前分层清理旧文件（日志类早清、总结归档长留），防止运行时数据无限膨胀，见 cleanup_old_logs 说明
     cleanup_old_logs(args.project_dir / "data", args.log_dir, logger)
 
     # 单次执行模式：不写 PID 文件、不进循环，直接跑一次对应 prompt 后退出

@@ -4,7 +4,7 @@
 让 agent 无需写任何临时脚本，通过一行命令调用 market / trading / report 任意方法，
 结果以 JSON 输出到 stdout。这是 agent 调用接口调用层 SDK 的**唯一入口**——禁止 agent 自行编写
 临时 .py 脚本去 import skills.mock（曾因写到项目工作目录之外触发 external_directory 权限拦截）。
-本地状态读写（交易日志 / 自选池 / 复盘总结 / 动态策略）已拆分到 skills.journal，走 skills/journal/cli.py。
+本地状态读写（市场阶段状态机 / 动态策略）已拆分到 skills.journal，走 skills/journal/cli.py。
 
 用法：
     python skills/mock/cli.py <module>.<method> [位置参数...] [--key value ...]
@@ -36,7 +36,7 @@
       strategy_id（int）的 "6" 转 int；dict/list 走 JSON；无注解时智能推断
     - 字符串参数支持 `@路径` 文件引用：值以 `@` 开头且路径存在时，读文件原文作为参数值
       （解决多行总结 / 长 JSON 在 shell 中转义被破坏的问题），如
-      `cli.py report.submit_summary watch @data/.watch_summary.txt`
+      `cli.py report.submit_summary watch @data/watch-summary-2026-09-09.md`
     - 方法返回值原样 JSON 输出（保留 SDK 信封 {code,message,data} 契约）；返回 None 时输出 {"ok": true}
     - 任意异常输出结构化错误 JSON + 退出码非零，agent 可直接解析
 """

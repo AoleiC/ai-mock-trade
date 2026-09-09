@@ -3,7 +3,7 @@
 
 把盯盘 / 复盘总结上报到后台（写入 mock_log 表），供事后回溯 agent 的判断与决策。
 属于 mock 接口调用层（依赖 _http._post），与 journal skill 的本地状态读写分离：
-本地状态读写（交易日志 / 自选池 / 复盘总结 / 动态策略）见 skills.journal.journal。
+本地状态读写（市场阶段状态机 / 动态策略）见 skills.journal.journal。
 
 认证与请求基础设施（_BASE_URL / DEFAULT_SECRET_KEY / _post）见 _http.py。
 所有接口通过 cookie 中的 secret_key 进行身份认证。

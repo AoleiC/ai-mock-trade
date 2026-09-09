@@ -4,13 +4,13 @@ description: >
   柚子 AI 的接口调用能力：行情查询、模拟交易、总结上报。
   覆盖盯盘、下单、复盘上报全链路。当用户提到大盘、板块、个股、热点、涨停、连板、
   情绪、买卖、持仓、委托、撤单、自选股、总结上报等任何与盯盘交易接口调用相关的操作时，
-  使用此 skill。本地状态读写（交易日志 / 自选池 / 复盘总结 / 动态策略）见 journal skill。
+  使用此 skill。本地状态读写（市场阶段状态机 / 动态策略）见 journal skill。
 compatibility: []
 ---
 
 # 柚子 AI Skill — 行情、交易、总结上报（接口调用 SDK）
 
-柚子 AI agent 的接口调用层入口（行情 / 交易 / 总结上报）。所有接口已封装为 Python SDK。本地状态读写（交易日志 / 自选池 / 复盘总结 / 动态策略）见 `skills/journal/SKILL.md`。
+柚子 AI agent 的接口调用层入口（行情 / 交易 / 总结上报）。所有接口已封装为 Python SDK。本地状态读写（市场阶段状态机 / 动态策略）见 `skills/journal/SKILL.md`。
 
 > **agent 调用 SDK 的唯一方式是 `cli.py`（见下方「CLI 调用方式」），禁止编写临时 .py 脚本去 import skills.mock**——曾因临时脚本写到项目工作目录之外触发 `external_directory` 权限拦截，导致整轮盯盘中断。`import` 形式仅供人类开发者在 REPL / 测试中使用。
 
@@ -44,7 +44,7 @@ python skills/mock/cli.py --help          # 打印用法
 | 策略选股（创业+科创大趋势） | `cli.py market.get_strategy_trend_stocks 10` |
 | 策略选股（沪深主板） | `cli.py market.get_strategy_trend_stocks 7` |
 | 策略选股（大幅回撤） | `cli.py market.get_strategy_trend_stocks 21` |
-| 本地状态读写（交易日志 / 自选池 / 复盘 / 策略） | 见 `skills/journal/SKILL.md`，走 `skills/journal/cli.py` |
+| 本地状态读写（市场阶段状态机 / 动态策略） | 见 `skills/journal/SKILL.md`，走 `skills/journal/cli.py` |
 | 盯盘 / 复盘总结上报 | `cli.py report.submit_summary watch "..."` |
 
 **下单与记录**（写操作，参数在调用前校验，未知参数不会误下单）：
@@ -52,7 +52,6 @@ python skills/mock/cli.py --help          # 打印用法
 ```
 python skills/mock/cli.py trading.buy --stock_code 603019 --price 45.0 --volume 100
 python skills/mock/cli.py trading.sell --stock_code 603019 --price 46.0 --volume 100
-python skills/journal/cli.py append_trade_action buy 603019 中科曙光 45.0 100 "主线龙头符合买点"
 ```
 
 **参数与输出约定**：
@@ -67,7 +66,7 @@ python skills/journal/cli.py append_trade_action buy 603019 中科曙光 45.0 10
 ```python
 from skills.mock.market import get_summary, get_stock_info, get_hot_spot_list
 from skills.mock.trading import get_account, get_positions, buy, sell, cancel
-from skills.journal.journal import read_trade_log, append_trade_action, read_dynamic_strategy
+from skills.journal.journal import read_regime_state, read_dynamic_strategy
 ```
 
 ## 认证
@@ -363,7 +362,7 @@ cli.py trading.get_favorite_jtcsm_block_stocks evt_20260704_xxx --field amount_m
 ## 三、总结上报 — `skills.mock.report`
 
 把盯盘 / 复盘总结上报到后台（写入 mock_log 表），属于接口调用层（依赖 `_http`）。
-本地状态读写（交易日志 / 自选池 / 复盘总结 / 动态策略）已拆分到独立 skill `skills.journal`，
+本地状态读写（市场阶段状态机 / 动态策略）已拆分到独立 skill `skills.journal`，
 走 `python skills/journal/cli.py <method>`（见 `skills/journal/SKILL.md`）。
 
 | 函数 | 用途 | 必填 |
@@ -402,9 +401,9 @@ from skills.mock.trading import get_positions, sell
 pos = get_positions()["data"]
 sell(stock_code="603019", price=46.0, volume=100)
 
-# 记录一笔操作 + 读策略（本地状态读写走 journal skill）
-from skills.journal.journal import append_trade_action, read_dynamic_strategy
-append_trade_action("buy", "603019", "中科曙光", 45.0, 100, "主线龙头，符合买点")
+# 读当日生效阶段 + 读策略（本地状态读写走 journal skill）
+from skills.journal.journal import read_regime_state, read_dynamic_strategy
+read_regime_state(trade_date="2026-09-09")
 read_dynamic_strategy()
 ```
 
@@ -415,7 +414,7 @@ read_dynamic_strategy()
 import 自检（`cwd = 项目根目录`，供人类开发者用）：
 
 ```bash
-python -c "from skills.mock.market import get_summary, get_hot_theme_list, get_theme_stock_list, nl_pick; from skills.mock.trading import buy, get_profit_curve, add_favorite_theme, add_favorite_jtcsm; from skills.journal.journal import read_trade_log; print('ok')"
+python -c "from skills.mock.market import get_summary, get_hot_theme_list, get_theme_stock_list, nl_pick; from skills.mock.trading import buy, get_profit_curve, add_favorite_theme, add_favorite_jtcsm; from skills.journal.journal import read_regime_state; print('ok')"
 ```
 
 CLI runner 自检（agent 实际使用的入口）：

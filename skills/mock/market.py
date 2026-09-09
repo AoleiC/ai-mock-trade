@@ -844,7 +844,7 @@ def get_intraday_analysis() -> dict:
         sentiment_score: int                         # 短线情绪温度分值（0-100）
         attack_directions: list[DirectionDict]       # 顶层进攻方向（= final_analysis.attack_directions 的拷贝，**不直接选股**）
         retreat_directions: list[DirectionDict]      # 顶层撤退方向（= final_analysis.retreat_directions 的拷贝）
-        sentiment_analysis: SentimentDict            # 短线情绪温度分析（含推理、置信度、关键信号等完整 JSON）
+        sentiment_analysis: SentimentDict            # 短线情绪温度分析（含推理、关键信号等完整 JSON）
         capital_analysis: None                       # 历史遗留字段，恒为 None（资金面维度已并入题材分析）
         final_analysis: FinalDict                    # 最终汇总分析（含 position_limit）
         hot_rotation_analysis: HotRotationDict       # 题材分析（板块级方向 + 代码查表填充的风向标个股）
@@ -867,7 +867,6 @@ def get_intraday_analysis() -> dict:
     ====== SentimentDict（sentiment_analysis）======
         {
             "sentiment_label": str,                  # 短线情绪温度（激进/偏激进/中性/偏保守/保守）—— **仓位主锚**
-            "confidence": str,                       # LLM 置信度（高/中/低）
             "sentiment_score": int,                  # 短线情绪分值（0-100）
             "reasoning": str,                        # 推理原文
             "divergence_type": str,                  # 分歧性质（良性分歧/恶性退潮/一致加速/无分歧）—— 回调方向算机会还是风险的定性依据

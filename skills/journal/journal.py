@@ -1,15 +1,16 @@
 """
 状态读写 SDK（总结与写文档）
 
-负责读写数字人的本地状态文件：交易日志、自选池、每日总结、动态策略等。
+负责读写数字人的本地状态文件：市场阶段状态机、动态策略。
 纯本地文件读写，不依赖网络接口；总结上报（submit_summary）在 skills.mock.report。
 agent 通过 cli.py 调用，不直接操作文件。
 
 文件存储约定（均相对工作区根 = 项目根目录）：
-    - data/trade-log-{date}.json       每日交易日志（操作记录 + 情绪快照）
-    - data/watchlist-{date}.json       每日自选池（标的、买点、止损位）
-    - data/daily-summary-{date}.json   每日复盘总结（盈亏、反思、次日计划）
+    - data/regime-state.json           市场阶段状态机（滚动单文件，盘中自愈写回）
     - memory/dynamic-strategy.md       动态交易策略（仅按需改写，不复盘时自动写）
+
+注：盯盘 / 复盘总结全文（data/watch-summary-{date}.md / review-summary-{date}.md）由
+调度器从 run log 自动归档，不经本模块（总纲 §7.1 / §10.1）。
 
 目录推算：本文件位于 skills/journal/journal.py，向上 3 层 dirname 即项目根目录，
 用于定位 data/ 与 memory/ 目录。
@@ -27,243 +28,6 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 _DATA_DIR = os.path.join(_PROJECT_ROOT, "data")
 # 记忆目录（动态策略等）
 _MEMORY_DIR = os.path.join(_PROJECT_ROOT, "memory")
-
-
-def _read_json(filename: str) -> dict:
-    """读取 _DATA_DIR 下的 JSON 状态文件，不存在则返回空 dict"""
-    path = os.path.join(_DATA_DIR, filename)
-    if not os.path.exists(path):
-        return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _write_json(filename: str, data: dict) -> None:
-    """写入 _DATA_DIR 下的 JSON 状态文件（ensure_ascii=False，缩进 2 空格）"""
-    path = os.path.join(_DATA_DIR, filename)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-# ==================== 交易日志 ====================
-
-# 读取交易日志
-def read_trade_log(date: Optional[str] = None) -> dict:
-    """
-    读取交易日志
-
-    入参：
-        date: str（可选，默认当天）- 交易日期，格式 YYYY-MM-DD
-
-    返回 -> dict：
-        {
-            "date": "2025-05-22",           # str，交易日期
-            "actions": list[dict],          # 交易动作列表，每项含：
-                time: str                   - 操作时间，如 "09:31"
-                action: str                 - "buy" 或 "sell"
-                stock: str                  - 股票代码
-                name: str                   - 股票名称
-                price: float                - 成交价格
-                volume: int                 - 成交数量（股）
-                reason: str                 - 操作理由
-            "emotions": list[dict],         # 情绪快照列表，每项含：
-                time: str                   - 快照时间，如 "09:45"
-                phase: str                  - 短线情绪阶段（主升/回暖/混沌/退潮）
-                zt_count: int               - 当时涨停数
-                lb_height: int              - 当时连板高度
-                main_line: str              - 当时主线名称
-            "stop_loss_triggered": list,    # 触发止损的记录
-            "summary": str                  # 日志摘要
-        }
-    """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-    return _read_json(f"trade-log-{date}.json")
-
-
-# 写入交易日志
-def write_trade_log(data: dict, date: Optional[str] = None) -> None:
-    """
-    写入交易日志
-
-    入参：
-        data: dict（必传）- 完整的交易日志数据，结构同 read_trade_log 返回值
-        date: str（可选，默认当天）- 交易日期，格式 YYYY-MM-DD
-
-    返回：无
-    """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-    _write_json(f"trade-log-{date}.json", data)
-
-
-# 追加一条交易动作到今日日志
-def append_trade_action(
-    action: str,
-    stock_code: str,
-    stock_name: str,
-    price: float,
-    volume: int,
-    reason: str,
-) -> None:
-    """
-    追加一条交易动作到今日日志
-
-    入参：
-        action: str（必传）- "buy" 或 "sell"
-        stock_code: str（必传）- 股票代码
-        stock_name: str（必传）- 股票名称
-        price: float（必传）- 成交价格
-        volume: int（必传）- 成交数量（股）
-        reason: str（必传）- 操作理由
-
-    返回：无
-    """
-    log = read_trade_log()
-    if "actions" not in log:
-        log["actions"] = []
-        log["date"] = datetime.now().strftime("%Y-%m-%d")
-    log["actions"].append({
-        "time": datetime.now().strftime("%H:%M"),
-        "action": action,
-        "stock": stock_code,
-        "name": stock_name,
-        "price": price,
-        "volume": volume,
-        "reason": reason,
-    })
-    write_trade_log(log)
-
-
-# 追加一次情绪快照到今日日志
-def append_emotion_snapshot(
-    phase: str,
-    zt_count: int,
-    lb_height: int,
-    main_line: str,
-    extra: Optional[dict] = None,
-) -> None:
-    """
-    追加一次情绪快照到今日日志
-
-    入参：
-        phase: str（必传）- 短线情绪阶段（主升/回暖/混沌/退潮）
-        zt_count: int（必传）- 当前涨停数
-        lb_height: int（必传）- 当前连板高度
-        main_line: str（必传）- 当前主线名称
-        extra: dict（可选）- 额外信息，会被合并到快照记录中
-
-    返回：无
-    """
-    log = read_trade_log()
-    if "emotions" not in log:
-        log["emotions"] = []
-        log["date"] = datetime.now().strftime("%Y-%m-%d")
-    entry = {
-        "time": datetime.now().strftime("%H:%M"),
-        "phase": phase,
-        "zt_count": zt_count,
-        "lb_height": lb_height,
-        "main_line": main_line,
-    }
-    if extra:
-        entry.update(extra)
-    log["emotions"].append(entry)
-    write_trade_log(log)
-
-
-# ==================== 自选池 ====================
-
-# 读取自选池
-def read_watchlist(date: Optional[str] = None) -> dict:
-    """
-    读取自选池
-
-    入参：
-        date: str（可选，默认当天）- 交易日期，格式 YYYY-MM-DD
-
-    返回 -> dict：
-        {
-            "date": "2025-05-22",           # str，交易日期
-            "main_line": "算力/芯片",       # str，主线板块名称
-            "stocks": list[dict],           # 标的列表，每项含：
-                code: str                   - 股票代码
-                name: str                   - 股票名称
-                role: str                   - 角色（如 "龙头"、"跟风"）
-                buy_point: float            - 买点价格
-                stop_loss: float            - 止损价格
-                auction_threshold: str      - 竞价条件（如 "放量>5%"）
-            "position_limit": float,        # 仓位上限（0-1 之间，如 0.6 表示 6 成）
-            "conditions": str               # 买入条件描述
-        }
-    """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-    return _read_json(f"watchlist-{date}.json")
-
-
-# 写入自选池
-def write_watchlist(data: dict, date: Optional[str] = None) -> None:
-    """
-    写入自选池
-
-    入参：
-        data: dict（必传）- 完整的自选池数据，结构同 read_watchlist 返回值
-        date: str（可选，默认当天）- 交易日期，格式 YYYY-MM-DD
-
-    返回：无
-    """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-    _write_json(f"watchlist-{date}.json", data)
-
-
-# ==================== 每日总结 ====================
-
-# 读取每日复盘总结
-def read_daily_summary(date: Optional[str] = None) -> dict:
-    """
-    读取每日复盘总结
-
-    入参：
-        date: str（可选，默认当天）- 交易日期，格式 YYYY-MM-DD
-
-    返回 -> dict：
-        {
-            "date": "2025-05-22",           # str，交易日期
-            "profit_loss": 1500.0,          # float，当日盈亏金额
-            "trades_count": 3,              # int，交易次数
-            "hit_stop_loss": false,         # bool，是否触发止损
-            "main_line": "算力/芯片",       # str，当日主线
-            "emotions": list[dict],         # 当日情绪快照列表
-            "reflection": "今日操作...",    # str，操作反思
-            "next_day_plan": dict,          # 次日计划，含：
-                main_line_candidates: list[str]  - 主线候选列表
-                watchlist: list[dict]            - 次日自选列表
-                position_limit: float            - 仓位上限
-                conditions: str                  - 买入条件
-            "strategy_changes": list        # 策略调整记录
-        }
-    """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-    return _read_json(f"daily-summary-{date}.json")
-
-
-# 写入每日复盘总结
-def write_daily_summary(data: dict, date: Optional[str] = None) -> None:
-    """
-    写入每日复盘总结
-
-    入参：
-        data: dict（必传）- 完整的复盘数据，结构同 read_daily_summary 返回值
-        date: str（可选，默认当天）- 交易日期，格式 YYYY-MM-DD
-
-    返回：无
-    """
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
-    _write_json(f"daily-summary-{date}.json", data)
 
 
 # ==================== 动态策略 ====================
@@ -318,10 +82,10 @@ _STATE_LABELS = {
 
 # 状态机阈值常量（变更须用户批准，且与 00-regime-machine.md 同步修订，只改一处即判定漂移）
 _ICE_THRESHOLD = 25          # 冰点阈值：收盘短线温度 s <= 25 进入 / 延续冰点聚簇
-_UP_THRESHOLD = 55           # 主升确认阈值：连续 2 日 s >= 55 进主升预备，第 3 日仍强放行
-_MID_LOW = 45                # 回落区间下沿：主升退守 / 震荡入口的下边界（45 <= s < 55）
-_PEAK_THRESHOLD = 70         # 段内极值阈值：主升段内曾 s >= 70 才允许回落转高位震荡
-_OSC_EXIT = 40               # 震荡出口：s < 40 退防守（45 进 40 出，回差防边界抖动）
+_UP_THRESHOLD = 55           # 回暖确认阈值：连续 2 日 s >= 55 进回暖确认期，第 3 日仍强转高潮期（高潮期禁新开仓，见 20 分册）
+_MID_LOW = 45                # 回落区间下沿：高潮期退守 / 退潮分歧期入口的下边界（45 <= s < 55）
+_PEAK_THRESHOLD = 70         # 段内极值阈值：高潮段内曾 s >= 70 才允许回落转退潮分歧期
+_OSC_EXIT = 40               # 退潮分歧期出口：s < 40 退退潮期（45 进 40 出，回差防边界抖动）
 _CLUSTER_SUSPEND_LIMIT = 3   # 聚簇挂起上限：冰点日后第 3 个交易日收盘仍无冰则簇终结清零
 _CHANNEL_DEPTH_MIN = 2       # 试错通道簇深下限：双冰及以上才开放试错通道（A/A2/B 共用资格）
 _CHANNEL_DEPTH_MAX = 4       # 试错通道簇深上限：>= 5 视为长熊防御关闭（样本外保守外推，前向验证）
@@ -333,17 +97,17 @@ _HISTORY_KEEP = 90           # history 滚动保留条数（> 60 日重放窗口
 _REGIME_FILE = "regime-state.json"
 
 
-# 返回盲初始化状态（防守 + 全计数清零，重放起点 / 长假重置用）
+# 返回盲初始化状态（退潮期 + 全计数清零，重放起点 / 长假重置用）
 def _blank_regime() -> dict:
-    """返回盲初始化运行态（防守 + 计数清零）。重放起点偏差有界且方向保守。"""
+    """返回盲初始化运行态（退潮期 + 计数清零）。重放起点偏差有界且方向保守。"""
     return {
         "current_state": "defense",   # 当前阶段枚举值
         "cluster_depth": 0,           # 冰点聚簇深度
         "days_since_ice": None,       # 距最近冰点日的交易日数（冰点日 = 0；无活动簇为 None）
-        "up_count": 0,                # 连续 s >= 55 计数（主升预备确认用）
-        "mid_count": 0,               # 连续 45 <= s < 55 计数（未见极值主升段的双日回落出口用）
-        "saw_peak_70": False,         # 本主升段内是否曾 s >= 70（震荡出口用，跨段重置）
-        "missing_count": 0,           # 连续缺数日计数（>= 2 强制防守）
+        "up_count": 0,                # 连续 s >= 55 计数（回暖确认期确认用）
+        "mid_count": 0,               # 连续 45 <= s < 55 计数（未见极值高潮段的双日回落出口用）
+        "saw_peak_70": False,         # 本高潮段内是否曾 s >= 70（退潮分歧期出口用，跨段重置）
+        "missing_count": 0,           # 连续缺数日计数（>= 2 强制退潮期）
         "last_change_date": None,     # 最近一次状态切换日
     }
 
@@ -385,7 +149,7 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
     """
     st = dict(run)
     prev_date = st.get("updated_date")
-    # 长假重置（先于一切）：相邻交易日自然日差 >= 4 → 全量重置回防守、计数清零
+    # 长假重置（先于一切）：相邻交易日自然日差 >= 4 → 全量重置回退潮期、计数清零
     # （保守代理：正常周末差 3，差 4 = 中间至少 3 个连续休市自然日；误判方向仅多保守）
     if prev_date:
         gap = (datetime.strptime(trade_date, "%Y-%m-%d") - datetime.strptime(prev_date, "%Y-%m-%d")).days
@@ -396,7 +160,7 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
     # 缺数日规则：透明跳过（不计入任何连续计数、簇深度与 days_since_ice 均不变），状态沿用
     if s is None:
         st["missing_count"] += 1
-        # 连续 2 日缺数 → 强制防守（连续计数清零、聚簇信息保留）
+        # 连续 2 日缺数 → 强制退潮期（连续计数清零、聚簇信息保留）
         if st["missing_count"] >= 2:
             st["current_state"] = "defense"
             st["up_count"] = 0
@@ -430,19 +194,19 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
         if st["up_count"] >= 2:
             new = "uptrend_ready"
     elif cur == "ice_point":
-        # 再冰（s <= 25）保持冰点（聚簇分支已计深度）；回升未确认退防守，不允许单日跳主升
+        # 再冰（s <= 25）保持冰点期（聚簇分支已计深度）；回升未确认退退潮期，不允许单日跳高潮期
         if s > _ICE_THRESHOLD:
             new = "uptrend_ready" if st["up_count"] >= 2 else "defense"
     elif cur == "uptrend_ready":
-        # 第 3 日仍强才放行（入场必慢 2 日）；确认失败回防守
+        # 第 3 日仍强才放行（入场必慢 2 日）；确认失败回退潮期
         new = "uptrend" if s >= _UP_THRESHOLD else "defense"
     elif cur == "uptrend":
         if st["saw_peak_70"] and _MID_LOW <= s < _UP_THRESHOLD:
-            new = "oscillation"   # 本段曾见极值，回落未崩 → 高位震荡
+            new = "oscillation"   # 本段曾见极值，回落未崩 → 退潮分歧期
         elif not st["saw_peak_70"] and st["mid_count"] >= 2:
-            new = "defense"       # 防卡死：未见过极值的主升段，双日确认回落即结束
+            new = "defense"       # 防卡死：未见过极值的高潮段，双日确认回落即结束
         elif s < _MID_LOW:
-            new = "defense"       # 主升结束
+            new = "defense"       # 高潮期结束
     elif cur == "oscillation":
         if s < _OSC_EXIT:
             new = "defense"       # 回差设计：45 进 40 出，防边界抖动
@@ -452,11 +216,11 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
     if new != cur:
         st["current_state"] = new
         st["last_change_date"] = trade_date
-        # 离开主升：段内极值标记与本段回落计数清零（跨段不继承）
+        # 离开高潮期：段内极值标记与本段回落计数清零（跨段不继承）
         if cur == "uptrend":
             st["saw_peak_70"] = False
             st["mid_count"] = 0
-    # 段内极值置位（含放行当日：进入主升当日本身即属本段，如 08-27 放行日 s=75）
+    # 段内极值置位（含放行当日：进入高潮期当日本身即属本段，如 08-27 放行日 s=75）
     if st["current_state"] == "uptrend" and s >= _PEAK_THRESHOLD:
         st["saw_peak_70"] = True
 
@@ -492,7 +256,7 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
             "code": 200,                      # int，200 成功；非 200 一律按防守处理
             "trade_date": "2026-09-04",       # str，传入的盘面交易日
             "current_state": "ice_point",     # str，当前阶段：defense / ice_point / uptrend_ready / uptrend / oscillation
-            "state_label": "冰点",            # str，中文标签（摘要行「阶段」字段用）
+             "state_label": "冰点期",          # str，中文标签（摘要行「阶段」字段用）
             "cluster_depth": 2,               # int，冰点聚簇深度
             "days_since_ice": 0,              # int | None，距最近冰点日的交易日数
             "next_day_channel_open": True,    # bool，当日尾盘通道是否开放（预计算字段，只读不自判）
@@ -502,7 +266,7 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
                                               #   "长假盘中防御"（自然日差 >= 4 且 <= 5）
                                               #   "复盘断档防御"（自然日差 == 2：相邻交易日差只可能是 1/3/>=4，差 2 必为漏复盘）
             "effective_state": "ice_point",   # str，当日实际生效阶段（defensive_reason 非空时为 defense）
-            "effective_state_label": "冰点",  # str，effective_state 的中文标签
+            "effective_state_label": "冰点期",  # str，effective_state 的中文标签
         }
         文件缺失 / 损坏 / JSON 解析失败 → {"code": 404, "error": ..., "defensive_reason": ..., "effective_state": "defense"}
     """
@@ -511,16 +275,16 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
     path = os.path.join(_DATA_DIR, _REGIME_FILE)
     if not os.path.exists(path):
         return {"code": 404, "error": "regime-state.json 不存在，当日按防守处理，复盘时 regime_rebuild 重建",
-                "defensive_reason": "状态文件缺失", "effective_state": "defense", "effective_state_label": "防守"}
+                "defensive_reason": "状态文件缺失", "effective_state": "defense", "effective_state_label": "退潮期"}
     try:
         with open(path, "r", encoding="utf-8") as f:
             state = json.load(f)
     except (json.JSONDecodeError, OSError) as exc:
         return {"code": 404, "error": f"regime-state.json 读取 / 解析失败: {exc}，当日按防守处理",
-                "defensive_reason": "状态文件损坏", "effective_state": "defense", "effective_state_label": "防守"}
+                "defensive_reason": "状态文件损坏", "effective_state": "defense", "effective_state_label": "退潮期"}
     if "current_state" not in state or "updated_date" not in state:
         return {"code": 404, "error": "regime-state.json 缺少 current_state / updated_date 字段，当日按防守处理",
-                "defensive_reason": "状态文件损坏", "effective_state": "defense", "effective_state_label": "防守"}
+                "defensive_reason": "状态文件损坏", "effective_state": "defense", "effective_state_label": "退潮期"}
 
     # 陈旧 / 断档 / 长假盘中防御（自然日差代理，journal 无交易日历）：
     # 相邻交易日自然日差只可能是 1（周内连续）/ 3（周末）/ >=4（长假）——
@@ -530,7 +294,7 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
         gap = (datetime.strptime(trade_date, "%Y-%m-%d") - datetime.strptime(state["updated_date"], "%Y-%m-%d")).days
     except ValueError:
         return {"code": 400, "error": f"trade_date {trade_date!r} 或文件 updated_date {state['updated_date']!r} 日期格式非法",
-                "defensive_reason": "日期格式异常", "effective_state": "defense", "effective_state_label": "防守"}
+                "defensive_reason": "日期格式异常", "effective_state": "defense", "effective_state_label": "退潮期"}
     if gap > _STALE_GAP_DAYS:
         defensive_reason = f"陈旧防御（复盘断档：更新日 {state['updated_date']} 距 {trade_date} 已 {gap} 自然日）"
     elif gap >= _HOLIDAY_GAP_DAYS:
@@ -693,7 +457,7 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
                 break
             series[dates[idx]][key] = _parse_temperature(value)
 
-    # 从「防守 + 计数清零」盲初始化起点纯函数重放（含序列内相邻日期自然日差 >= 4 的长假重置）
+    # 从「退潮期 + 计数清零」盲初始化起点纯函数重放（含序列内相邻日期自然日差 >= 4 的长假重置）
     run = _blank_regime()
     run["updated_date"] = None
     history = []

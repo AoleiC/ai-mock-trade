@@ -70,7 +70,7 @@ MODULE_TARGETS: dict[str, list[tuple[str, str]]] = {
 _MODULE_ALIASES = {"claude": "agents"}
 
 # 永久黑名单（按路径任意段匹配，任何模块都不覆盖）
-# .env 含本地密钥；data 是用户运行时交易日志；backups 是工具自身产物；
+# .env 含本地密钥；data 是用户运行时数据；backups 是工具自身产物；
 # __pycache__ / .DS_Store 是缓存与系统文件
 _BLACKLIST_SEGMENTS = {".env", "data", "backups", "__pycache__", ".DS_Store"}
 
