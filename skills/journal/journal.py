@@ -309,11 +309,11 @@ def write_dynamic_strategy(content: str) -> None:
 
 # 状态枚举 → 中文标签（摘要行「阶段」字段用，映射固定勿改）
 _STATE_LABELS = {
-    "defense": "防守",
-    "ice_point": "冰点",
-    "uptrend_ready": "主升预备",
-    "uptrend": "主升",
-    "oscillation": "高位震荡",
+    "defense": "退潮期",
+    "ice_point": "冰点期",
+    "uptrend_ready": "回暖确认期",
+    "uptrend": "高潮期",
+    "oscillation": "退潮分歧期",
 }
 
 # 状态机阈值常量（变更须用户批准，且与 00-regime-machine.md 同步修订，只改一处即判定漂移）

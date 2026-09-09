@@ -6,7 +6,7 @@
 > - **总纲（本文件）**：流程控制 + 必调接口 + 关键字段含义 + 通用字段消费纪律 + 输出规范，是整个盯盘 / 复盘的**总流程控制与核心说明**。**随架构演进同步修订**
 > - **心法** `memory/trading-mindset.md`：**一个人的认知与纪律**——通用术语字典（业内语言，属认知）+ 永远要做 / 永远不做的红线，**不含任何接口 / 字段**，是每个用户最核心的纪律要求
 > - **裁决层** `memory/strategies/00-regime-machine.md` + `skills/journal` 状态机代码：市场阶段状态机——**今天处于什么阶段**的唯一权威判定。**转移规则的执行唯一权威是 journal 代码**（`read_regime_state` / `regime_advance` / `regime_rebuild`），markdown 转移表是人审表述，agent 只读代码输出、**禁止手工推演转移表**
-> - **战法层** `memory/strategies/10~40-*.md`：各阶段内的买点 / 载体 / 仓位 / 止盈细则（冰点博弈 / 情绪主升 / 高位震荡 / 退潮防守）
+> - **战法层** `memory/strategies/10~40-*.md`：各阶段内的买点 / 载体 / 仓位 / 止盈细则（冰点博弈 / 高潮期持仓管理 / 退潮分歧期切换 / 退潮期防守）
 > - **通用层** `memory/dynamic-strategy.md`：状态机索引 + 跨战法通用细则（选股六池 / 题材阶段状态机 / 止损 / 时间止损 / T+1 / 输出规范 / 复盘流程 / 教训附录）
 
 ---
@@ -49,7 +49,7 @@
 
 | 必读数据 | 调用命令 | 用途 |
 |---------|---------|------|
-| **市场阶段状态**（第 0 步，读 + 自愈） | `cli.py journal.read_regime_state --trade_date <当日>` | 当日生效阶段（防守 / 冰点 / 主升预备 / 主升 / 高位震荡）+ 尾盘通道资格（`next_day_channel_open`）—— 确定当日用哪套战法与允许行为（裁决层，契约见 `memory/strategies/00-regime-machine.md`）。**自愈流程（不依赖昨晚复盘是否执行）**：读后发现 `code != 200`、`defensive_reason` 非空、或 `updated_date` 落后于最近已完成交易日（调 `market.get_daily_indicators_history --days 10`，其 `dates` 中 < 当日的最后一个日期即最近已完成交易日）→ 当场补齐：把接口返回传给 `journal.regime_rebuild --raw '<JSON>' --write_back true --before_date <当日>` 重放写回后重读（**只要缺就自愈，不限次数**；自愈后仍失败 / 仍 defensive → 当日按防守处理并记录）。agent 只取数传参、只读代码输出，**禁止手工推演转移表** |
+| **市场阶段状态**（第 0 步，读 + 自愈） | `cli.py journal.read_regime_state --trade_date <当日>` | 当日生效阶段（退潮期 / 冰点期 / 回暖确认期 / 高潮期 / 退潮分歧期）+ 尾盘通道资格（`next_day_channel_open`）—— 确定当日用哪套战法与允许行为（裁决层，契约见 `memory/strategies/00-regime-machine.md`）。**自愈流程（不依赖昨晚复盘是否执行）**：读后发现 `code != 200`、`defensive_reason` 非空、或 `updated_date` 落后于最近已完成交易日（调 `market.get_daily_indicators_history --days 10`，其 `dates` 中 < 当日的最后一个日期即最近已完成交易日）→ 当场补齐：把接口返回传给 `journal.regime_rebuild --raw '<JSON>' --write_back true --before_date <当日>` 重放写回后重读（**只要缺就自愈，不限次数**；自愈后仍失败 / 仍 defensive → 当日按防守处理并记录）。agent 只取数传参、只读代码输出，**禁止手工推演转移表** |
 | **盘面分析** | `cli.py market.get_intraday_analysis` | 决策核心 —— 情绪 / 仓位上限 / 进攻方向 / 撤退方向 / 操作建议 / 风险（字段含义见 §3.2） |
 | **交易所重点监管股票** | `cli.py market.get_key_watch_stocks` | 近 11 个交易日触发交易所**重点监管异动**的个股名单（**禁买红线**，心法 §4.1） |
 | **账户资金** | `cli.py trading.get_account` | 总资产 / 可用资金 / 今日盈亏 —— 判定仓位是否超限、单只与同方向上限（心法 §五） |
@@ -107,7 +107,7 @@
 | `attack_sectors[].key_stocks[]` | 进攻方向风向标个股（代码查表填充，`[{name, code, zdf}]`，非 LLM 输出） | 方向内强弱参照；**不**进选股池、**不**作个股取舍裁判 |
 | `retreat_sectors[]`（最多 5 个） | 资金撤退方向（含 `key_stocks` 领跌风向标） | 同方向持仓纳入减仓候选；新仓回避该方向个股 |
 | `retreat_sectors[].risk_level == "可能蔓延"` | 撤退风险分级 | **只回避该撤退方向本身**（不买、持仓减仓）；**不据此封杀其它进攻方向开仓**（§5.5 不以偏概全）。仅当整段不为 None 时生效 |
-| `emerging_sectors[]`（最多 2 个） | 新冒头方向（含 `key_stocks` 风向标） | **轮动预期差主通道**：方向确认滞后于方向启动，等升级为进攻方向时核心标的常已高位 / 涨停。`signal` 显示当日有实际资金动作 **且** `key_stocks` 当日集体上攻（风向标验证）达标时，按策略新冒头参与规则（§0.8.1，Day 1 买点）参与方向内标的；未达标只观察。不当撤退回避；其 `key_stocks` 名单仍不直接进选股 |
+| `emerging_sectors[]`（最多 2 个） | 新冒头方向（含 `key_stocks` 风向标） | **通道 D 前瞻观察输入**：新冒头方向当日只记录观察（板块名 + 排名），次日若仍居市场热度前三即获通道 D 资格（[板块]连强尾盘先手，策略 `40` §二C）；当日不因 emerging 双确认直接买入。不当撤退回避；其 `key_stocks` 名单仍不直接进选股 |
 | `defensive_sectors[]` | 防御性板块（避险抱团，非短线进攻题材） | 仅供日志 / 视野参考；**不**作进攻方向消费 |
 | `market_structure` | 市场结构（健康/分散/混沌/退潮） | 仅供日志 / 解释，描述当下不预测 |
 | 整段为 None | 维度缺位 | §5.4 退化规则 |
@@ -126,6 +126,7 @@
 | 场景 | 调用 | 触发时机 |
 |------|------|----------|
 | 持仓分时（涨跌 + 主力）/ 板块归属 | `cli.py market.get_stock_minute_trendline <code>` / `get_stock_info <code>` | 加速止盈复核、买入候选分时确认（§3.3） |
+| 板块热度榜（当日实时 / 历史日期） | `cli.py market.get_hot_spot_list --sort_by zt_count --limit 3`（实时，含 avg_zdf）/ `cli.py market.get_top_hot_spots --date <日期> --limit 3`（历史；**当日盘中返回空，当日判定必须用前者**） | 通道 D 连榜资格判定（策略 `40` §二C——接口直查，不依赖复盘产物）、[板块]连强终结判定、[板块]翻绿 / 红盘休整判定（avg_zdf） |
 | 个股板块归属 / 主营细分 | `cli.py market.get_stock_info <code>` | 撤退方向细分判定、套利资金面验证 |
 | 买点形态确认 | `cli.py market.get_daily_k_data <code>` | 突破 / 多头排列 / 多日量价 |
 | 选股（六池合并） | `cli.py market.get_strategy_trend_stocks 6/10/7` + `get_main_inflow_top` + `get_amount_top` + `get_hourly_hot_top` | **选股条件触发时**按需拉（六池全拉合并去重，主力 / 成交额 / 热度榜来源补验趋势形态，策略选股筛选） |
@@ -274,7 +275,7 @@
 
 ### 7.2 盘后（review）
 
-无强制顺序，按需执行。**复盘不做推演、不做选股、不推进状态机**：只分析今日操作与不操作（状态机推进由盘中第 0 步自愈承担，§3.1；次日机会由盘中新冒头通道当场发现，策略 §0.8.1）。
+无强制顺序，按需执行。**复盘不做推演、不做选股、不推进状态机**：只分析今日操作与不操作（状态机推进由盘中第 0 步自愈承担，§3.1；次日机会由通道 D（[板块]连强 2 日尾盘先手，策略 `40` §二C）承接，emerging 首日进榜为其前瞻观察输入）。
 
 1. **复盘与反思**（**旁观者视角，只覆盖"今日"**）：调 `market` 取大盘 / 历史 / 热点，读 `data/trade-log-{date}.json`；记录 LLM 字段快照作为情绪快照；核心回答四个问题——**买卖点是否正确正常？行情好时为何一直不开仓？行情不好时为何开仓？仓位是否合理？**——外加合规性检查（总仓位 vs `position_limit`、单只 ≤30%、同方向 ≤50%、已撤退方向 =0）与纪律执行情况、可复用经验、操作策略优化空间；写入 `data/daily-summary-{date}.json`（`reflection` / `strategy_changes`）；**不自动改写** `memory/dynamic-strategy.md` 与战法分册。
 2. **事实记录（记录 ≠ 推演，不可省略）**：① 把当日各方向的阶段与**连续强势天数**（昨日仍强则 +1，走弱 / 撤退归零）写入 `daily-summary` 的 `next_day_plan.rotation_ledger`（字段名沿用历史结构，内容仅事实记录）——这是策略 §2.3 再分歧量化判定的唯一权威数据源（"此前已连续强势 ≥2 日"的前提），缺失会导致退潮预警永久降级为普通分歧处理；② 落库 `regime_track`（当日双温度定格、当日生效状态、当日操作与状态机预期的对照标注——"操作与不操作分析"的结构化落库，结构见策略通用层复盘流程；当日 s/d 定格值取自 `get_daily_indicators_history` 当日行，状态字段取盘中 `read_regime_state` 的实际读数）。两者均**不含**预期接力方向、次日安排等任何推演内容。
@@ -303,7 +304,7 @@
 
 **字段值直接采用 LLM / 状态机返回值，禁止自创**（§5.1）：
 - **时间 HH:MM** = 调度指令注入的「当前时间」（未注入时 `date` 实测），与盯盘总结标记同源（见上方「时间取值」硬红线）
-- **阶段** = `read_regime_state` 输出的 `state_label`（中文映射固定：`defense→防守 / ice_point→冰点 / uptrend_ready→主升预备 / uptrend→主升 / oscillation→高位震荡`；读取失败 / `defensive_reason` 非空按防守处理时输出"防守（状态读取异常）"）
+- **阶段** = 按 `read_regime_state` 输出的 `current_state` **枚举值**查固定映射表翻译：`defense→退潮期 / ice_point→冰点期 / uptrend_ready→回暖确认期 / uptrend→高潮期 / oscillation→退潮分歧期`（**以枚举翻译为准、不直接采用 `state_label` 字面值**——skills 官方包自更新可能返回旧标签字面值，枚举值是稳定契约）；读取失败 / `defensive_reason` 非空按退潮期处理时输出"退潮期（状态读取异常）"
 - **情绪标签** = `sentiment_label`；**仓位** = `position_limit`；**活跃** = `final_analysis.attack_directions[0].direction`；**置信度** = `confidence`
 - LLM 字段缺位 → 写"该字段为空，无法判定"
 
@@ -352,12 +353,12 @@
 ├── memory/
 │   ├── trading-mindset.md             # 心法：认知与纪律 + 术语字典（不含接口 / 字段）
 │   ├── dynamic-strategy.md            # 通用层：状态机索引 + 跨战法通用细则 + 复盘教训
-│   ├── design/                        # 设计文档（多战法体系设计等）
+│   ├── design/                        # 设计文档（节点先手体系实现蓝图、证据台账等）
 │   └── strategies/                    # 战法分册（裁决层 + 四战法）
 │       ├── 00-regime-machine.md       # 阶段状态机（转移表人审表述 + 状态契约 + 变更纪律）
 │       ├── 10-ice-point.md            # 冰点博弈战法
 │       ├── 20-main-uptrend.md         # 情绪主升战法
-│       ├── 30-high-oscillation.md     # 高位震荡切换战法
+│       ├── 30-high-oscillation.md     # 退潮分歧期切换战法
 │       └── 40-retreat-defense.md      # 退潮防守战法
 ├── skills/
 │   ├── mock/                          # 接口调用 SDK（行情、交易、总结上报）

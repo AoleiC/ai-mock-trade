@@ -157,7 +157,8 @@ def get_daily_summary(date: Optional[str] = None, since: Optional[str] = None) -
         params["date"] = date
     if since:
         params["since"] = since
-    return _get("/api/daily-summary", params)
+    # 原路径 /api/daily-summary 已迁移至 /api/web/yidong_timeline（盯盘页接口统一前缀）
+    return _get("/api/web/yidong_timeline", params)
 
 
 # ==================== 二、板块维度 ====================
