@@ -49,7 +49,7 @@
 
 | 必读数据 | 调用命令 | 用途 |
 |---------|---------|------|
-| **市场阶段状态**（第 0 步，读 + 自愈） | `cli.py journal.read_regime_state --trade_date <当日>` | 当日生效阶段（退潮期 / 冰点期 / 回暖确认期 / 高潮期 / 退潮分歧期）+ 尾盘通道资格（`next_day_channel_open`）—— 确定当日用哪套战法与允许行为（裁决层，契约见 `memory/strategies/00-regime-machine.md`）。**自愈流程（不依赖昨晚复盘是否执行）**：读后发现 `code != 200`、`defensive_reason` 非空、或 `updated_date` 落后于最近已完成交易日（调 `market.get_daily_indicators_history --days 10`，其 `dates` 中 < 当日的最后一个日期即最近已完成交易日）→ 当场补齐：把接口返回传给 `journal.regime_rebuild --raw '<JSON>' --write_back true --before_date <当日>` 重放写回后重读（**只要缺就自愈，不限次数**；自愈后仍失败 / 仍 defensive → 当日按防守处理并记录）。agent 只取数传参、只读代码输出，**禁止手工推演转移表** |
+| **市场阶段状态**（第 0 步，读 + 自愈） | `cli.py journal.read_regime_state --trade_date <当日>` | 当日生效阶段（退潮期 / 冰点期 / 回暖确认期 / 高潮期 / 退潮分歧期）+ 通道资格（`next_day_channel_open` 全天试错通道 / `next_day_double_ice_ready` 潜在双冰日 / `uptrend_first_day` 高潮第 1 日——通道 C/D 视同升温节点，第 2 日起全禁）—— 确定当日用哪套战法与允许行为（裁决层，契约见 `memory/strategies/00-regime-machine.md`）。**自愈流程（不依赖昨晚复盘是否执行）**：读后发现 `code != 200`、`defensive_reason` 非空、或 `updated_date` 落后于最近已完成交易日（调 `market.get_daily_indicators_history --days 10`，其 `dates` 中 < 当日的最后一个日期即最近已完成交易日）→ 当场补齐：把接口返回传给 `journal.regime_rebuild --raw '<JSON>' --write_back true --before_date <当日>` 重放写回后重读（**只要缺就自愈，不限次数**；自愈后仍失败 / 仍 defensive → 当日按防守处理并记录）。agent 只取数传参、只读代码输出，**禁止手工推演转移表** |
 | **盘面分析** | `cli.py market.get_intraday_analysis` | 决策核心 —— 情绪 / 仓位上限 / 进攻方向 / 撤退方向 / 操作建议 / 风险（字段含义见 §3.2） |
 | **交易所重点监管股票** | `cli.py market.get_key_watch_stocks` | 近 11 个交易日触发交易所**重点监管异动**的个股名单（**禁买红线**，心法 §4.1） |
 | **账户资金** | `cli.py trading.get_account` | 总资产 / 可用资金 / 今日盈亏 —— 判定仓位是否超限、单只与同方向上限（心法 §五） |
@@ -65,7 +65,7 @@
 
 | 嵌套路径 | 含义 | 决策角色 |
 |----------|------|----------|
-| `temperature_score` / `temperature_label` | 大盘情绪温度分值（0-100）/ 阶段标签 | **策略层状态机输入**（收盘序列消费，规则固化于 `00-regime-machine.md` 与 journal 代码；盘中单点值仅战法一双温度背书用）+ **日志展示**；仓位含义已被 LLM 映射到 `position_limit`，不作开仓过滤器 |
+| `temperature_score` / `temperature_label` | 大盘情绪温度分值（0-100）/ 阶段标签 | **双温度分工（心法 §三）**：日级——大盘标签作乐观转移背书（进升温 / 高潮需标签 ∈ {修复, 升温}，收盘序列消费，规则固化于 `00-regime-machine.md` 与 journal 代码）；盘中——**当帧标签是通道当帧条件的主源**（冰点/退潮 = 仍冰，修复/升温 = 回暖，稳定）；+ **日志展示**；仓位含义已被 LLM 映射到 `position_limit`，不作开仓过滤器 |
 | `attack_directions` / `retreat_directions`（顶层） | 顶层进攻 / 撤退方向（= `final_analysis` 同名字段的拷贝） | **次要参考** —— 与 `final.attack_directions` 共同构成活跃方向，仅作方向聚焦，其下 `stocks` 名单不作个股取舍裁判 |
 | `sentiment_analysis` | 短线情绪分析 | 见下表 |
 | `capital_analysis` | 历史遗留字段，恒为 None（资金面维度已并入题材分析） | **不消费** |
@@ -77,7 +77,7 @@
 | 嵌套路径 | 含义 | 决策角色 |
 |----------|------|----------|
 | `sentiment_label` | 短线情绪（激进/偏激进/中性/偏保守/保守） | **开仓触发的核心字段**（策略开仓过滤） |
-| `sentiment_score` | 短线情绪分值（0-100） | **策略层状态机输入**（收盘序列消费，规则固化于 `00-regime-machine.md` 与 journal 代码；盘中单点值仅战法一尾盘回升确认用）+ 日志展示 |
+| `sentiment_score` | 短线情绪分值（0-100） | **日级节点判定的主引擎**（收盘序列消费，规则固化于 `00-regime-machine.md` 与 journal 代码——短线交易的节点体感只有短线温度能表达）；**盘中当帧仅作佐证**（日内可 60↔20 跳变，不作 gating，主源为当帧大盘标签）+ 日志展示 |
 | `reasoning` | 推理原文 | 仅供日志 / 解释 |
 | `divergence_type` | 分歧性质（良性分歧/恶性退潮/一致加速/无分歧） | **方向定性的辅助参考**：良性分歧时攻击方向回踩算观察机会、恶性退潮加强防守；仅供视野参考，不调档不禁仓（已折算进 observe_directions 归类） |
 | `key_signals[]` | 关键信号列表 | **分级消费**：`看空+强` 视为加重风险信号，与 `risk_warnings` 一起纳入决策；`看空+中/弱` 已综合到 `sentiment_label` 不重复消费；`看多/中性` 仅日志或忽略 |
@@ -208,7 +208,7 @@
 
 **分时四信号的退化**："走势与板块背离"依赖今日 `attack_directions`，整体缺位时该项**跳过**；其余三项（放量滞涨 / 长上影 / 资金背离）照常判定。
 
-**状态机资格判定不受 LLM 缺位影响**（`regime-state.json` 本地文件照常可读）；但冰点尾盘通道的条件②依赖当帧 `sentiment_score` 与 `temperature_score`，LLM 整体缺位 → 回升确认无证据 → 当日尾盘通道实际不可执行，不出手。
+**状态机资格判定不受 LLM 缺位影响**（`regime-state.json` 本地文件照常可读）；但冰点各通道的当帧条件依赖当帧大盘温度标签（通道 A/B 判"当帧仍冰"= 标签 ∈ {冰点, 退潮}、通道 A2 回暖试错判"当帧回暖"= 标签 ∈ {修复, 升温}），LLM 整体缺位 → 无证据 → 当日通道实际不可执行，不出手。
 
 **输出**：按策略输出规范 —— 市场判断板块写"今日 LLM 尚未生成（首条约 9:36），仅执行持仓风控，不参与开仓"；摘要行情绪 / 仓位 / 活跃字段写"今日 LLM 缺位"。
 
@@ -349,7 +349,6 @@
 ├── memory/
 │   ├── trading-mindset.md             # 心法：认知与纪律 + 术语字典（不含接口 / 字段）
 │   ├── dynamic-strategy.md            # 通用层：状态机索引 + 跨战法通用细则 + 复盘教训
-│   ├── design/                        # 设计文档（节点先手体系实现蓝图、证据台账等）
 │   └── strategies/                    # 战法分册（裁决层 + 四战法）
 │       ├── 00-regime-machine.md       # 阶段状态机（转移表人审表述 + 状态契约 + 变更纪律）
 │       ├── 10-ice-point.md            # 冰点博弈战法

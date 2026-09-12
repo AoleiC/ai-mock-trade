@@ -67,8 +67,7 @@ def write_dynamic_strategy(content: str) -> None:
 
 # ==================== 市场阶段状态机（裁决层，执行唯一权威） ====================
 #
-# 转移规则的人审表述见 memory/strategies/00-regime-machine.md，设计依据与 60 日
-# 重放口径见 memory/design/2026-09-03-multi-regime-strategy.md（附录 B 即本节实现规格）。
+# 转移规则的人审表述、设计依据与 60 日重放统计见 memory/strategies/00-regime-machine.md。
 # 二者必须同步修订；agent 只读本节代码输出，禁止手工推演转移表。
 
 # 状态枚举 → 中文标签（摘要行「阶段」字段用，映射固定勿改）
@@ -82,13 +81,14 @@ _STATE_LABELS = {
 
 # 状态机阈值常量（变更须用户批准，且与 00-regime-machine.md 同步修订，只改一处即判定漂移）
 _ICE_THRESHOLD = 25          # 冰点阈值：收盘短线温度 s <= 25 进入 / 延续冰点聚簇
-_UP_THRESHOLD = 55           # 回暖确认阈值：连续 2 日 s >= 55 进回暖确认期，第 3 日仍强转高潮期（高潮期禁新开仓，见 20 分册）
+_UP_THRESHOLD = 55           # 回暖确认阈值：连续 2 日 s >= 55 进回暖确认期，第 3 日仍强转高潮期（高潮第 1 日视同升温节点、第 2 日起禁新开仓，见 20 分册）
 _MID_LOW = 45                # 回落区间下沿：高潮期退守 / 退潮分歧期入口的下边界（45 <= s < 55）
 _PEAK_THRESHOLD = 70         # 段内极值阈值：高潮段内曾 s >= 70 才允许回落转退潮分歧期
 _OSC_EXIT = 40               # 退潮分歧期出口：s < 40 退退潮期（45 进 40 出，回差防边界抖动）
 _CLUSTER_SUSPEND_LIMIT = 3   # 聚簇挂起上限：冰点日后第 3 个交易日收盘仍无冰则簇终结清零
-_CHANNEL_DEPTH_MIN = 2       # 试错通道簇深下限：双冰及以上才开放试错通道（A/A2/B 共用资格）
-_CHANNEL_DEPTH_MAX = 4       # 试错通道簇深上限：>= 5 视为长熊防御关闭（样本外保守外推，前向验证）
+_CHANNEL_DEPTH_MIN = 2       # 试错通道簇深下限：双冰及以上开放全天试错通道（无上限，簇终结即关闭；极端长熊由出手纪律兜底：非共振 / 非主线不出手 + 小仓试错）
+_OPTIMISTIC_LABELS = ("修复", "升温")  # 乐观转移（进升温 / 高潮）的大盘标签背书集合：权重护盘时短线孤军的假升温被此过滤；标签缺位 = 背书不通过（保守）
+_DOUBLE_ICE_DEPTH = 1        # 双冰观察日簇深：昨收盘已累计 1 冰 → 次日为潜在双冰日（开放回暖试错 + 尾盘低吸双路径）
 _HOLIDAY_GAP_DAYS = 4        # 长假重置代理：相邻交易日自然日差 >= 4 全量重置（journal 无交易日历）
 _STALE_GAP_DAYS = 5          # 陈旧检测阈值：读取日与更新日自然日差 > 5 判复盘任务断档
 _HISTORY_KEEP = 90           # history 滚动保留条数（> 60 日重放窗口，供阈值重拟合）
@@ -107,8 +107,10 @@ def _blank_regime() -> dict:
         "up_count": 0,                # 连续 s >= 55 计数（回暖确认期确认用）
         "mid_count": 0,               # 连续 45 <= s < 55 计数（未见极值高潮段的双日回落出口用）
         "saw_peak_70": False,         # 本高潮段内是否曾 s >= 70（退潮分歧期出口用，跨段重置）
-        "missing_count": 0,           # 连续缺数日计数（>= 2 强制退潮期）
-        "last_change_date": None,     # 最近一次状态切换日
+        "missing_count": 0,             # 连续缺数日计数（>= 2 强制退潮期）
+        "last_change_date": None,       # 最近一次状态切换日
+        "last_d_label": None,           # 最近一次推进日的大盘温度标签（乐观背书存档，盘中参考用）
+        "next_day_double_ice_ready": False,  # bool，双冰观察日资格（预计算字段，只读不自判）
     }
 
 
@@ -123,27 +125,37 @@ def _parse_temperature(value) -> Optional[int]:
     return int(m.group()) if m else None
 
 
-# 规范化 CLI 传入的可空温度（"None" / "null" / "" → None；其余转 int）
+# 从温度原文提取标签（"退潮(30)" -> "退潮"；纯数字 / None 返回 None）
+def _parse_temperature_label(value) -> Optional[str]:
+    """从 `标签(分数)` 格式提取中文标签（乐观转移背书用）；纯数字 / 空值返回 None。"""
+    if value is None:
+        return None
+    m = re.match(r"^([\u4e00-\u9fa5]+)", str(value))
+    return m.group(1) if m else None
+
+
+# 规范化 CLI 传入的可空温度（"None" / "null" / "" → None；"退潮(30)" 与 "30" 均取数字）
 def _normalize_temperature(value) -> Optional[int]:
-    """把 CLI 传入的温度参数规范为 int 或 None（agent 缺值时传字符串 None / null）。"""
+    """把 CLI 传入的温度参数规范为 int 或 None（agent 缺值时传字符串 None / null；带标签原文取数字）。"""
     if value is None:
         return None
     if isinstance(value, (int, float)):
         return int(value)
-    text = str(value).strip()
-    if text.lower() in ("none", "null", ""):
-        return None
-    return int(text)
+    m = re.search(r"\d+", str(value))
+    return int(m.group()) if m else None
 
 
 # 单日前推（转移表 + 聚簇挂起合并 + 连续计数 + 通道预计算的唯一权威实现）
-def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
-    """按附录 B 口径把运行态向前推进一个交易日（纯函数，每日至多转移一次）。
+def _advance_one(run: dict, trade_date: str, s: Optional[int], d_label: Optional[str] = None) -> dict:
+    """按状态机分册转移表把运行态向前推进一个交易日（纯函数，每日至多转移一次）。
 
     入参：
         run: dict（必传）- 推进前运行态（含 updated_date 与全部计数字段）
         trade_date: str（必传）- 推进到的交易日，格式 YYYY-MM-DD
         s: int | None（必传）- 当日收盘短线温度定格值；None 走缺数日规则
+        d_label: str | None（可选）- 当日大盘温度标签（"冰点/退潮/修复/升温/降温"），
+            乐观转移（进升温 / 高潮）的背书输入：d_label ∈ {修复, 升温} 才放行乐观转移；
+            None / 其他标签 = 背书不通过（保守，宁错过）。悲观方向（冰点 / 退潮）不依赖此参数
 
     返回 -> dict：推进后的运行态（新 dict，不改入参）。
     """
@@ -167,12 +179,16 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
             st["mid_count"] = 0
             st["saw_peak_70"] = False
         st["next_day_channel_open"] = False
+        st["next_day_double_ice_ready"] = False
         return st
     st["missing_count"] = 0
 
     # 连续计数（收盘 s 序列的纯函数，与当日所处状态无关）
     st["up_count"] = st["up_count"] + 1 if s >= _UP_THRESHOLD else 0
     st["mid_count"] = st["mid_count"] + 1 if _MID_LOW <= s < _UP_THRESHOLD else 0
+    st["last_d_label"] = d_label
+    # 乐观转移背书（分层温度纪律：日级节点短线主引擎，大盘标签背书乐观方向防假升温）
+    optimistic_ok = d_label in _OPTIMISTIC_LABELS
 
     # 聚簇挂起合并：s <= 25 深度 +1 且 days_since_ice 归零；
     # 有活动簇且当日未冰 → days_since_ice +1，第 3 个交易日收盘仍无冰 → 簇终结清零
@@ -191,15 +207,17 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
     if cur != "ice_point" and s <= _ICE_THRESHOLD:
         new = "ice_point"
     elif cur == "defense":
-        if st["up_count"] >= 2:
+        if st["up_count"] >= 2 and optimistic_ok:
             new = "uptrend_ready"
     elif cur == "ice_point":
-        # 再冰（s <= 25）保持冰点期（聚簇分支已计深度）；回升未确认退退潮期，不允许单日跳高潮期
+        # 再冰（s <= 25）保持冰点期（聚簇分支已计深度）；回升未确认先落退潮期——防抖标签不跳级，
+        # 标签滞后由行动层豁免补齐：V 反第 1 日盘中走通道 A2（当帧回暖认证）、第 2 日晨起
+        # up_count==1 触发通道 C"升温第 1 日"豁免照常参与（40 分册 §二A），行动层无盲区
         if s > _ICE_THRESHOLD:
-            new = "uptrend_ready" if st["up_count"] >= 2 else "defense"
+            new = "uptrend_ready" if (st["up_count"] >= 2 and optimistic_ok) else "defense"
     elif cur == "uptrend_ready":
-        # 第 3 日仍强才放行（入场必慢 2 日）；确认失败回退潮期
-        new = "uptrend" if s >= _UP_THRESHOLD else "defense"
+        # 第 3 日仍强才放行（入场必慢 2 日）；确认失败回退潮期——放行需大盘标签背书（乐观背书）
+        new = "uptrend" if (s >= _UP_THRESHOLD and optimistic_ok) else "defense"
     elif cur == "uptrend":
         if st["saw_peak_70"] and _MID_LOW <= s < _UP_THRESHOLD:
             new = "oscillation"   # 本段曾见极值，回落未崩 → 退潮分歧期
@@ -210,8 +228,8 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
     elif cur == "oscillation":
         if s < _OSC_EXIT:
             new = "defense"       # 回差设计：45 进 40 出，防边界抖动
-        elif st["up_count"] >= 2:
-            new = "uptrend_ready"  # 重启确认流程
+        elif st["up_count"] >= 2 and optimistic_ok:
+            new = "uptrend_ready"  # 重启确认流程（乐观背书）
 
     if new != cur:
         st["current_state"] = new
@@ -224,10 +242,15 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int]) -> dict:
     if st["current_state"] == "uptrend" and s >= _PEAK_THRESHOLD:
         st["saw_peak_70"] = True
 
-    # 次日试错通道预计算（A/A2/B 共用资格；agent 盘中只读该字段，不自行判定）：冰点 且 2 <= 簇深 <= 4
+    # 次日试错通道预计算（A/A2 共用资格；agent 盘中只读该字段，不自行判定）：冰点 且簇深 >= 2（无上限，簇终结即关闭）
     st["next_day_channel_open"] = (
         st["current_state"] == "ice_point"
-        and _CHANNEL_DEPTH_MIN <= st["cluster_depth"] <= _CHANNEL_DEPTH_MAX
+        and st["cluster_depth"] >= _CHANNEL_DEPTH_MIN
+    )
+    # 次日双冰观察日预计算（潜在双冰日资格；agent 盘中只读该字段）：冰点 且 簇深 == 1（昨收盘已累计单冰）
+    st["next_day_double_ice_ready"] = (
+        st["current_state"] == "ice_point"
+        and st["cluster_depth"] == _DOUBLE_ICE_DEPTH
     )
     return st
 
@@ -259,7 +282,12 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
              "state_label": "冰点期",          # str，中文标签（摘要行「阶段」字段用）
             "cluster_depth": 2,               # int，冰点聚簇深度
             "days_since_ice": 0,              # int | None，距最近冰点日的交易日数
-            "next_day_channel_open": True,    # bool，当日尾盘通道是否开放（预计算字段，只读不自判）
+            "up_count": 1,                    # int，连续收盘 s >= 55 计数（>=1 即升温第 1 日，通道 C 资格判定用）
+            "next_day_channel_open": True,    # bool，当日全天试错通道是否开放（预计算字段，只读不自判）
+            "next_day_double_ice_ready": False,  # bool，当日是否为潜在双冰日（预计算字段，只读不自判）
+            "uptrend_first_day": False,       # bool，高潮第 1 日（读取时派生：uptrend 且 last_change_date == updated_date，
+                                              #   即状态恰在最近已完成交易日转入高潮——转入背书要求当日大盘 ∈ {修复, 升温}，
+                                              #   第 1 日必为双强惯性日，通道 C/D 视同升温节点；第 2 日起 false，全禁）
             "updated_date": "2026-09-03",     # str，文件最近一次盘后更新日
             "defensive_reason": None,         # str | None，非空 → 当日按防守处理并记录：
                                               #   "陈旧防御（复盘断档）"（自然日差 > 5）
@@ -303,6 +331,13 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
         defensive_reason = f"复盘断档防御（更新日 {state['updated_date']} 距 {trade_date} 为 2 自然日，中间漏了一个交易日复盘）"
 
     effective = "defense" if defensive_reason else state["current_state"]
+    # 高潮第 1 日标记（读取时派生，不落盘）：高潮期 且 last_change_date == updated_date
+    # （状态恰在最近已完成交易日转入高潮——转入背书要求当日大盘标签 ∈ {修复,升温}，
+    # 故第 1 日必然是"大盘还在升温"的双强惯性日；第 2 日起背书可能消失，禁买）
+    uptrend_first_day = (
+        state["current_state"] == "uptrend"
+        and state.get("last_change_date") == state["updated_date"]
+    )
     return {
         "code": 200,
         "trade_date": trade_date,
@@ -310,7 +345,11 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
         "state_label": _STATE_LABELS.get(state["current_state"], state["current_state"]),
         "cluster_depth": state.get("cluster_depth", 0),
         "days_since_ice": state.get("days_since_ice"),
+        "up_count": state.get("up_count", 0),
         "next_day_channel_open": state.get("next_day_channel_open", False),
+        "next_day_double_ice_ready": state.get("next_day_double_ice_ready", False),
+        "uptrend_first_day": uptrend_first_day and not defensive_reason,
+        "last_d_label": state.get("last_d_label"),
         "updated_date": state["updated_date"],
         "defensive_reason": defensive_reason,
         "effective_state": effective,
@@ -337,7 +376,9 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
             "current_state": "ice_point",     # str，推进后的阶段
             "state_label": "冰点",            # str，中文标签
             "cluster_depth": 3,               # int，推进后的聚簇深度
-            "next_day_channel_open": True,    # bool，次交易日尾盘通道是否开放（预计算）
+            "up_count": 1,                    # int，推进后的连续 s >= 55 计数（>=1 即升温第 1 日）
+            "next_day_channel_open": True,    # bool，次交易日全天试错通道是否开放（预计算）
+            "next_day_double_ice_ready": False,  # bool，次交易日是否为潜在双冰日（预计算）
             "changed": False,                 # bool，本次是否发生状态切换
             "holiday_reset": False,           # bool，本次是否触发长假重置
         }
@@ -356,6 +397,8 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
 
     s_val = _normalize_temperature(s)
     d_val = _normalize_temperature(d)
+    # d 支持传接口原文（如 "退潮(30)"）：数值落库、标签作乐观转移背书；纯数字传入时标签为 None（背书不通过，保守）
+    d_label = _parse_temperature_label(d)
     prev_state = state["current_state"]
     prev_updated = state.get("updated_date")
     # 长假重置探测（用于返回标记；实际重置在 _advance_one 内完成）
@@ -363,7 +406,7 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
         datetime.strptime(trade_date, "%Y-%m-%d") - datetime.strptime(prev_updated, "%Y-%m-%d")
     ).days >= _HOLIDAY_GAP_DAYS
 
-    run = _advance_one(state, trade_date, s_val)
+    run = _advance_one(state, trade_date, s_val, d_label)
 
     # 组装持久化结构（契约见 00-regime-machine.md §四）并原子覆盖写
     history = state.get("history", [])
@@ -381,6 +424,8 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
         "cluster_depth": run["cluster_depth"],
         "days_since_ice": run["days_since_ice"],
         "next_day_channel_open": run["next_day_channel_open"],
+        "next_day_double_ice_ready": run["next_day_double_ice_ready"],
+        "last_d_label": run.get("last_d_label"),
         "missing_count": run["missing_count"],
         "up_count": run["up_count"],
         "mid_count": run["mid_count"],
@@ -395,10 +440,13 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
         "trade_date": trade_date,
         "s": s_val,
         "d": d_val,
+        "d_label": d_label,
         "current_state": run["current_state"],
         "state_label": _STATE_LABELS[run["current_state"]],
         "cluster_depth": run["cluster_depth"],
+        "up_count": run["up_count"],
         "next_day_channel_open": run["next_day_channel_open"],
+        "next_day_double_ice_ready": run["next_day_double_ice_ready"],
         "changed": run["current_state"] != prev_state,
         "holiday_reset": holiday_reset,
     }
@@ -445,8 +493,8 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
     if not replay_dates:
         return {"code": 400, "error": f"before_date={before_date} 裁剪后无可重放交易日"}
 
-    # 解析双温度序列：行标签含「短线温度」→ s，含「大盘温度」→ d；逐日对齐 dates
-    series = {date: {"s": None, "d": None} for date in dates}
+    # 解析双温度序列：行标签含「短线温度」→ s，含「大盘温度」→ d；逐日对齐 dates（大盘标签同步提取作乐观背书）
+    series = {date: {"s": None, "d": None, "dl": None} for date in dates}
     for row in rows:
         label = str(row.get("label", ""))
         key = "s" if "短线温度" in label else ("d" if "大盘温度" in label else None)
@@ -456,13 +504,15 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
             if idx >= len(dates):
                 break
             series[dates[idx]][key] = _parse_temperature(value)
+            if key == "d":
+                series[dates[idx]]["dl"] = _parse_temperature_label(value)
 
     # 从「退潮期 + 计数清零」盲初始化起点纯函数重放（含序列内相邻日期自然日差 >= 4 的长假重置）
     run = _blank_regime()
     run["updated_date"] = None
     history = []
     for date in replay_dates:
-        run = _advance_one(run, date, series[date]["s"])
+        run = _advance_one(run, date, series[date]["s"], series[date].get("dl"))
         history.append({
             "date": date,
             "s": series[date]["s"],
@@ -479,6 +529,8 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
             "cluster_depth": run["cluster_depth"],
             "days_since_ice": run["days_since_ice"],
             "next_day_channel_open": run["next_day_channel_open"],
+            "next_day_double_ice_ready": run["next_day_double_ice_ready"],
+            "last_d_label": run.get("last_d_label"),
             "missing_count": run["missing_count"],
             "up_count": run["up_count"],
             "mid_count": run["mid_count"],
@@ -498,6 +550,8 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
             "cluster_depth": run["cluster_depth"],
             "days_since_ice": run["days_since_ice"],
             "next_day_channel_open": run["next_day_channel_open"],
+            "next_day_double_ice_ready": run["next_day_double_ice_ready"],
+            "last_d_label": run.get("last_d_label"),
             "up_count": run["up_count"],
             "mid_count": run["mid_count"],
             "saw_peak_70": run["saw_peak_70"],

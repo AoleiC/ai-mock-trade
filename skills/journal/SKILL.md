@@ -74,7 +74,7 @@ from skills.journal.journal import (
 | 函数 | 用途 | 必填 |
 |------|------|------|
 | `read_regime_state(trade_date=None)` | 盘中每轮第 0 步读当前阶段 + 试错通道资格（A/A2/B 共用）+ 陈旧/长假防御检测 | — |
-| `regime_advance(trade_date, s, d=None)` | 手工补推进一个交易日（保留工具；常态推进由盘中自愈 `regime_rebuild` 承担，复盘不再推进；s 缺值传 None 走缺数日规则） | `trade_date` / `s` |
+| `regime_advance(trade_date, s, d=None)` | 手工补推进一个交易日（保留工具；常态推进由盘中自愈 `regime_rebuild` 承担，复盘不再推进；s 缺值传 None 走缺数日规则；**d 建议传接口原文**（如 `"修复(35)"`）——数值落库、标签作乐观转移背书，纯数字传入时标签缺位 = 背书不通过） | `trade_date` / `s` |
 | `regime_rebuild(raw: dict, write_back=False, before_date=None)` | 从 `get_daily_indicators_history` 返回结构纯函数重放重建（支持信封自动解包；`before_date` 只重放该日之前，盘中自愈必传当日） | `raw` |
 
 **示例**：
@@ -82,9 +82,9 @@ from skills.journal.journal import (
 # 盘中读（defensive_reason 非空或 code != 200 → 当日按防守处理并记录）
 cli.py read_regime_state --trade_date 2026-09-07
 
-# 盘后推进（s 为当日收盘短线温度定格值；d 仅落库不进转移条件）
-cli.py regime_advance 2026-09-04 15 30
-cli.py regime_advance 2026-09-05 None 30     # s 缺值日
+# 盘后推进（s 为当日收盘短线温度定格值；d 传接口原文，标签用于乐观转移背书——进升温/高潮需大盘 ∈ {修复, 升温}）
+cli.py regime_advance 2026-09-04 15 "修复(35)"
+cli.py regime_advance 2026-09-05 None "退潮(30)"   # s 缺值日
 
 # 重建（raw 支持 @文件引用与整个接口信封；write_back=true 才写回状态文件）
 cli.py regime_rebuild --raw @/tmp/history.json --write_back true
