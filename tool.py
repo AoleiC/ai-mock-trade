@@ -12,6 +12,11 @@ skills/，若依赖被更新的对象，更新过程中 _http.py 出问题会让
   python tool.py check                                       # 仅检查服务端是否有更新，不下载
   python tool.py status                                      # 显示本地版本、服务端版本、缓存状态
   python tool.py update --force                              # 跳过版本门禁强制下载（list 失败时兜底）
+
+自更新总开关（.env 配置 TOOL_UPDATE_ENABLED，缺省 true）：
+  置 false 后 update / check 直接短路退出（不请求服务端、不覆盖任何文件），
+  status 不受影响（纯本地读状态）。本地有定制改动时建议关闭，
+  防止调度器启动时自动升级（watch_scheduler 会调 tool.py update skills）覆盖本地改动。
 """
 
 from __future__ import annotations
@@ -71,8 +76,10 @@ _MODULE_ALIASES = {"claude": "agents"}
 
 # 永久黑名单（按路径任意段匹配，任何模块都不覆盖）
 # .env 含本地密钥；data 是用户运行时数据；backups 是工具自身产物；
-# __pycache__ / .DS_Store 是缓存与系统文件
-_BLACKLIST_SEGMENTS = {".env", "data", "backups", "__pycache__", ".DS_Store"}
+# __pycache__ / .DS_Store 是缓存与系统文件；
+# journal.py 含本地定制改动（2026-09-18 通道 E / next_day_v_repair_ready 预计算字段），
+# 服务端官方包发版包含该改动后应将其移出黑名单，恢复自动更新
+_BLACKLIST_SEGMENTS = {".env", "data", "backups", "__pycache__", ".DS_Store", "journal.py"}
 
 # 服务端接口路径
 _LIST_PATH = "/api/web/skills/list"        # 公开接口，返回 skills 列表 + project_last_updated
@@ -116,6 +123,19 @@ def get_base_url() -> str:
 def get_secret_key() -> str:
     """返回 STOCK_SECRET_KEY（已 strip）；空表示未配置。"""
     return os.environ.get("STOCK_SECRET_KEY", "").strip()
+
+
+# 取自更新总开关（缺省开启；关闭后 update / check 短路，status 不受影响）
+def is_update_enabled() -> bool:
+    """
+    返回 TOOL_UPDATE_ENABLED 是否开启
+
+    解析规则：.env 未配置视为开启（保持自动更新默认行为）；
+    取值（strip + 小写）在 {"true", "1", "yes", "on"} 内视为开启，
+    其余任何值（false / 0 / no / off / 手滑写错）一律视为关闭——
+    关闭是保守方向（不请求服务端、不覆盖本地文件），宁可误关不可误开。
+    """
+    return os.environ.get("TOOL_UPDATE_ENABLED", "true").strip().lower() in ("true", "1", "yes", "on")
 
 
 # ========== HTTP ==========
@@ -551,6 +571,15 @@ def main() -> int:
         stream=sys.stderr,
     )
     load_env()
+    # 自更新总开关关闭时短路 update / check（含 --force）：不请求服务端、不覆盖任何文件；
+    # 返回 0 保证调度器（watch_scheduler 启动时自动调 update skills）日志干净、不触发失败告警。
+    # status 是纯本地读状态，不受开关影响
+    if args.cmd in ("update", "check") and not is_update_enabled():
+        logger.info(
+            "自更新已关闭(.env TOOL_UPDATE_ENABLED=false)，跳过 %s；恢复自动更新请把该配置改回 true",
+            args.cmd,
+        )
+        return 0
     return args.func(args)
 
 

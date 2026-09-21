@@ -49,7 +49,7 @@
 
 | 必读数据 | 调用命令 | 用途 |
 |---------|---------|------|
-| **市场阶段状态**（第 0 步，读 + 自愈） | `cli.py journal.read_regime_state --trade_date <当日>` | 当日生效阶段（退潮期 / 冰点期 / 回暖确认期 / 高潮期 / 退潮分歧期）+ 通道资格（`next_day_channel_open` 全天试错通道 / `next_day_double_ice_ready` 潜在双冰日 / `next_day_rebound_channel_open` 冰点反弹延续日——挂起第 1 日豁免退潮禁令走 A2/D / `uptrend_first_day` 高潮第 1 日——通道 C/D 视同升温节点，第 2 日起全禁）—— 确定当日用哪套战法与允许行为（裁决层，契约见 `memory/strategies/00-regime-machine.md`）。**自愈流程（不依赖昨晚复盘是否执行）**：读后发现 `code != 200`、`defensive_reason` 非空、或 `updated_date` 落后于最近已完成交易日（调 `market.get_daily_indicators_history --days 10`，其 `dates` 中 < 当日的最后一个日期即最近已完成交易日）→ 当场补齐：把接口返回传给 `journal.regime_rebuild --raw '<JSON>' --write_back true --before_date <当日>` 重放写回后重读（**只要缺就自愈，不限次数**；自愈后仍失败 / 仍 defensive → 当日按防守处理并记录）。agent 只取数传参、只读代码输出，**禁止手工推演转移表** |
+| **市场阶段状态**（第 0 步，读 + 自愈） | `cli.py journal.read_regime_state --trade_date <当日>` | 当日生效阶段（退潮期 / 冰点期 / 回暖确认期 / 高潮期 / 退潮分歧期）+ 通道资格（`next_day_channel_open` 全天试错通道 / `next_day_double_ice_ready` 潜在双冰日 / `next_day_rebound_channel_open` 冰点反弹延续日——挂起第 1 日豁免退潮禁令走 A2/D / `next_day_v_repair_ready` V 型修复日——昨写今用（昨收冰点簇挂起第 2 日 → 晨起读到 true 的**当日**即为修复资格日，非次日生效），当日豁免退潮禁令走通道 E 尾盘修复先手（"冰点-大涨-回调-修复"四步形态修复日，40 §二E）/ `uptrend_first_day` 高潮第 1 日——通道 C/D 视同升温节点，第 2 日起全禁）—— 确定当日用哪套战法与允许行为（裁决层，契约见 `memory/strategies/00-regime-machine.md`）。**自愈流程（不依赖昨晚复盘是否执行）**：读后发现 `code != 200`、`defensive_reason` 非空、或 `updated_date` 落后于最近已完成交易日（调 `market.get_daily_indicators_history --days 10`，其 `dates` 中 < 当日的最后一个日期即最近已完成交易日）→ 当场补齐：把接口返回传给 `journal.regime_rebuild --raw '<JSON>' --write_back true --before_date <当日>` 重放写回后重读（**只要缺就自愈，不限次数**；自愈后仍失败 / 仍 defensive → 当日按防守处理并记录）。**防呆红线：`updated_date == 最近已完成交易日` 即为最新、无需自愈（当日盘中值不算定格，不要拿"落后于今日"当自愈条件）；`--before_date` 必须传当日——传昨日会把昨日收盘定格也裁掉，状态机倒退一天（代码已加倒退拦截，会拒绝写回并报错）**。agent 只取数传参、只读代码输出，**禁止手工推演转移表** |
 | **盘面分析** | `cli.py market.get_intraday_analysis` | 决策核心 —— 情绪 / 仓位上限 / 进攻方向 / 撤退方向 / 操作建议 / 风险（字段含义见 §3.2） |
 | **交易所重点监管股票** | `cli.py market.get_key_watch_stocks` | 近 11 个交易日触发交易所**重点监管异动**的个股名单（**禁买红线**，心法 §4.1） |
 | **账户资金** | `cli.py trading.get_account` | 总资产 / 可用资金 / 今日盈亏 —— 判定仓位是否超限、单只与同方向上限（心法 §五） |
@@ -116,7 +116,7 @@
 `get_positions` 返回的持仓是**快照**（持仓股 / 成本 / 浮盈），**给不出分时形态**。加速止盈的四个信号（放量滞涨 / 长上影 / 走势与板块背离 / 资金背离）只能从**分时序列**识别，因此：
 
 - **T+1 可卖量过滤（先于一切盘中持仓分析）**：`available_volume == 0`（当日买入，T+1 当日不可卖）的持仓，盘中**跳过**止损止盈 / 加速止盈 / 撤退清仓等一切**卖出导向分析**（分时 / 板块接口一律不调）——判定了也无法执行，纯耗 token；当日分时结论对次日无继承价值（次日盯盘重新采集判定）。仅在输出中用持仓快照标注"今日买入 T+1 不可卖"；完整分析留待盘后复盘一次覆盖
-- **持仓复核**：对每只**可卖持仓**（`available_volume > 0`）**按需另取** `cli.py market.get_stock_minute_trendline <code>`（分时涨跌 `y1.data` + 主力资金 `y2.data`，`y2` 末值为当日主力净额）+ `cli.py market.get_stock_info <code>`（板块归属 `hot_categories` / `up_reason`），按策略加速止盈判定
+- **持仓复核**：对每只**可卖持仓**（`available_volume > 0`）**按需另取** `cli.py market.get_stock_minute_trendline <code>`（分时涨跌 `y1.data` 全序列 + 主力净额 `y2.data` 仅末位快照——主力分时序列已随服务端 2026-09 重构下线，`fund_trend` / `fund_divergence` 恒为 null、按 §5.2 缺位跳过）+ `cli.py market.get_stock_info <code>`（板块归属 `hot_categories` / `up_reason`），按策略加速止盈判定
 - **禁止**只用 `get_positions` 的快照涨跌幅 / 浮亏% 判定加速止盈（教训 A.7 的根因）
 - **买入候选同样适用**：买入前对候选股采分时判四信号，任一成立否决买入（教训 A.8）
 
