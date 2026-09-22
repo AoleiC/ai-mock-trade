@@ -7,6 +7,7 @@
 认证与请求基础设施（_BASE_URL / DEFAULT_SECRET_KEY / _get）见 _http.py。
 """
 
+from datetime import date as _today_date
 from typing import Optional
 
 from skills.mock._http import _get, _post
@@ -411,10 +412,15 @@ def get_stock_trendline(code: str) -> dict:
     return _get("/api/web/stock_trendline", {"code": code})
 
 
-# 获取个股分时趋势线（多轴：涨跌幅 + 主力资金）
+# 获取个股分时趋势线（多轴：涨跌幅全序列 + 主力净额快照）
 def get_stock_minute_trendline(code: str) -> dict:
     """
-    获取个股分时趋势线（多轴：涨跌幅 + 主力资金）
+    获取个股分时趋势线（多轴：涨跌幅全序列 + 主力净额快照）
+
+    说明：服务端 2026-09 重构（b4985f4）下线了 /api/web/minute_trendline，
+    本方法改为组合现存公开接口：分时涨跌取 /stock_trendline，主力净额取 /stock_info。
+    个股主力资金分时序列已无服务端数据源 —— y2 仅末位有值（当日主力净额快照，单位亿），
+    其余为 null；fund_trend / fund_divergence 恒为 null（无分时序列不可判定，消费方按字段缺位跳过）。
 
     入参：
         code: str（必传）- 股票代码
@@ -422,25 +428,62 @@ def get_stock_minute_trendline(code: str) -> dict:
     返回 -> dict（直接返回业务数据，无信封包装）：
         {
             "labels": list[str],                # 时间标签
-            "y1": {                             # TrendlineAxis 结构 - 涨跌度
+            "y1": {                             # TrendlineAxis 结构 - 涨跌度（分时全序列）
                 "title": "涨跌度",
                 "unit": "%",
                 "data": list[float],
                 "min": float,
                 "max": float
             },
-            "y2": {                             # TrendlineAxis 结构 - 主力资金
+            "y2": {                             # TrendlineAxis 结构 - 主力净额（仅末位快照，其余 null）
                 "title": "主力",
                 "unit": "亿",
-                "data": list[float],
+                "data": list[float | None],
                 "min": float,
                 "max": float
             },
-            "fund_trend": "steady_inflow|steady_outflow|flat",  # 主力资金分时趋势方向（代码预计算，三态）
-            "fund_divergence": "divergence|normal"  # 分时资金背离状态：fund_trend 为 steady_outflow 且价格收涨、当前主力净额为负时判 divergence
+            "fund_trend": None,                 # 恒 null：主力分时序列已下线，三态不可判定
+            "fund_divergence": None             # 恒 null：依赖 fund_trend，不可判定
         }
     """
-    return _get("/api/web/minute_trendline", {"scene": "stock", "code": code})
+    # 分时涨跌序列：调 /stock_trendline（信封格式，未到时间点数据为 null 占位）
+    trend_resp = _get("/api/web/stock_trendline", {"code": code})
+    trend = trend_resp.get("data") or {}
+    labels = trend.get("labels") or []
+    zdf_data = trend.get("zdf_data") or []
+
+    # 主力净额快照：调 /stock_info（裸 dict 无信封），amount_main 为元
+    main_amount_yi = None
+    info = _get("/api/web/stock_info", {"code": code})
+    if info.get("amount_main") is not None:
+        main_amount_yi = round(float(info["amount_main"]) / 1e8, 4)
+
+    # y2 仅末位放快照值（亿），其余 null —— 如实表达"序列缺位、只有当前值"
+    y2_data = [None] * len(labels)
+    if labels and main_amount_yi is not None:
+        y2_data[-1] = main_amount_yi
+
+    # y1 的 min/max 用有效值计算（剔除未到时间的 null 占位）
+    y1_valid = [v for v in zdf_data if v is not None]
+    return {
+        "labels": labels,
+        "y1": {
+            "title": "涨跌度",
+            "unit": "%",
+            "data": zdf_data,
+            "min": min(y1_valid) if y1_valid else 0,
+            "max": max(y1_valid) if y1_valid else 0,
+        },
+        "y2": {
+            "title": "主力",
+            "unit": "亿",
+            "data": y2_data,
+            "min": main_amount_yi if main_amount_yi is not None else 0,
+            "max": main_amount_yi if main_amount_yi is not None else 0,
+        },
+        "fund_trend": None,
+        "fund_divergence": None,
+    }
 
 
 # 获取个股历史分时趋势线（复盘用）
@@ -570,6 +613,9 @@ def get_amount_top() -> dict:
     """
     获取当天成交额前 30 的个股
 
+    说明：服务端 2026-09 重构（b4985f4）下线了 /api/web/amount_top，
+    本方法改调 /strategy_trend_stocks 的成交额排名模式（mode=amount_top，纯列表不带分时序列）。
+
     入参：无
 
     返回 -> dict（信封格式）：
@@ -577,12 +623,17 @@ def get_amount_top() -> dict:
             stock_code: str      - 股票代码
             stock_name: str      - 股票名称
             zdf: float           - 涨跌幅（%）
+            price: float         - 当前价
+            turn_z: float        - 自由换手率（%）
             amount: str          - 成交额（已格式化，如 "125.5亿"）
             main_amount: str     - 主力净额（已格式化，如 "2.3亿"）
-            turn_z: float        - 自由换手率（%）
-            intraday: list[float] - 当日分时涨跌幅序列（按时间正序）
+            value_z_str: str     - 自由流通市值（已格式化，如 "59.0亿"）
     """
-    return _get("/api/web/amount_top")
+    return _get("/api/web/strategy_trend_stocks", {
+        "mode": "amount_top",
+        "limit": 30,
+        "with_intraday": "false",
+    })
 
 
 # 获取大市值高涨幅个股（涨跌各返回）
@@ -772,33 +823,15 @@ def get_consecutive_board_ladder(end_date: Optional[str] = None) -> dict:
     return _get("/api/web/consecutive_board_ladder", params)
 
 
-# 获取近三天热点分类中出现过涨停的所有股票
-def get_hot_spot_zt_stocks() -> dict:
-    """
-    获取近三天热点分类中出现过涨停的所有股票
-
-    数据来源：近 3 个交易日的 daily_stock_up_ths（zdt_type == 'zt'），
-    关联 hot_spot_stock 获取所属热点分类，并批量取实时涨跌幅。
-    只保留热点分类内涨停股 > 8 的分组，按数量降序最多返回 10 个分类。
-
-    入参：无
-
-    返回 -> dict（信封格式）：
-        data: list[dict]，每项：
-            hot_spot_name: str                 # 热点分类名称
-            stocks: list[dict]                 # 成分股，按 zdf 倒序，含 stock_code/stock_name/zdf
-            avg_zdf: float                     # 组内平均涨跌幅
-            count: int                         # 涨停股数量
-    """
-    return _get("/api/web/hot_spot_zt_stocks")
-
-
 # 获取近 N 日热点轮动数据
 def get_hot_spot_rotation(days: int = 5, top_n: int = 9) -> dict:
     """
     获取近 N 日热点轮动数据（按板块涨停数 + 大肉数排序）
 
-    数据来源：HotSpotDailyStats 表，每天取 (zt_count + dr_count) 最高的 top_n 个板块。
+    说明：服务端 2026-09 重构（7d0d1cc）下线了 /api/web/hot_spot_rotation 单接口，
+    本方法改为组合现存接口组装：日期序列取 /daily_indicators_history（剔除未完成的今日），
+    逐日板块统计取 /hot_spot_daily_stats，客户端按 (zt_count + dr_count) 降序取每日前 top_n，
+    排序口径与原服务端实现一致。
 
     入参：
         days: int（可选，默认 5）- 查询最近交易日天数，范围 1-10
@@ -806,13 +839,54 @@ def get_hot_spot_rotation(days: int = 5, top_n: int = 9) -> dict:
 
     返回 -> dict（信封格式）：
         data: {
-            "dates": list[str],            # 日期列表（从旧到新），如 ["06-08", "06-09"]
+            "dates": list[str],            # 日期列表（从旧到新，MM-DD），如 ["06-08", "06-09"]
             "rank_labels": list[int],      # 排名标签，如 [1, 2, 3, ...]
             "cells": list[list[dict]]      # 每行一个排名，每列一个日期
-                # 每个元素含 name/score/zt_count/dr_count/all_avg_zdf
+                # 每个元素含 name/score/zt_count/dr_count/all_avg_zdf；
+                # 某日板块数不足 top_n 时该格为 null
         }
     """
-    return _get("/api/web/hot_spot_rotation", {"days": days, "top_n": top_n})
+    # 日期序列：多取 1 天余量剔除今日（盘中调用时今日指标已入列但未完成），再截最近 days 个
+    hist = _get("/api/web/daily_indicators_history", {"days": days + 1})
+    today_str = _today_date.today().isoformat()
+    dates = [d for d in (hist.get("data") or {}).get("dates") or [] if d < today_str][-days:]
+
+    # 逐日取全量板块统计，按 (涨停数 + 大肉数) 降序截前 top_n
+    per_day = []
+    for d in dates:
+        day_resp = _get("/api/web/hot_spot_daily_stats", {"date": d})
+        rows = day_resp.get("data") or []
+        rows.sort(
+            key=lambda r: (r.get("zt_count") or 0) + (r.get("dr_count") or 0),
+            reverse=True,
+        )
+        per_day.append(rows[:top_n])
+
+    # 转置为"每行一个排名、每列一个日期"的矩阵（与原契约一致）
+    cells = [
+        [
+            {
+                "name": per_day[di][ri].get("hot_spot_name"),
+                "score": (per_day[di][ri].get("zt_count") or 0) + (per_day[di][ri].get("dr_count") or 0),
+                "zt_count": per_day[di][ri].get("zt_count") or 0,
+                "dr_count": per_day[di][ri].get("dr_count") or 0,
+                "all_avg_zdf": per_day[di][ri].get("all_avg_zdf") or 0,
+            }
+            if ri < len(per_day[di])
+            else None
+            for di in range(len(dates))
+        ]
+        for ri in range(top_n)
+    ]
+    return {
+        "code": 200,
+        "message": "success",
+        "data": {
+            "dates": [d[5:] for d in dates],
+            "rank_labels": list(range(1, top_n + 1)),
+            "cells": cells,
+        },
+    }
 
 
 # 获取最新一条盘中 LLM 盘面分析结果

@@ -145,7 +145,7 @@ cli.py market.get_top_hot_spots --date 2026-07-04 --limit 20
 | `get_stock_info(stock_code)` | 个股详情（市值/换手/热点标签/涨停原因） | `stock_code` |
 | `get_daily_k_data(code, days=30)` | 日 K 线 | `code` |
 | `get_stock_trendline(code)` | 个股当日分时 | `code` |
-| `get_stock_minute_trendline(code)` | 个股分时多轴（涨跌幅 + 主力） | `code` |
+| `get_stock_minute_trendline(code)` | 个股分时多轴（涨跌幅全序列 + 主力净额末位快照） | `code` |
 | `get_stock_trendline_history(code, date)` | 个股历史分时（复盘用） | `code`, `date` |
 | `get_stock_daily_history(code, days=5)` | 个股近 N 日 daily_stock 全量数据（复盘用） | `code` |
 | `get_batch_stock_zdf(codes)` | 批量实时涨跌幅（逗号分隔代码） | `codes` |
@@ -168,8 +168,7 @@ cli.py market.get_batch_stock_zdf --codes 300083,300750,002415
 | `get_main_inflow_top()` | 主力净流入前 20 | — |
 | `get_hourly_hot_top(sort_by="rank")` | 小时热度榜前 30 | — |
 | `get_consecutive_board_ladder(end_date=None)` | 近四日连板天梯 | — |
-| `get_hot_spot_zt_stocks()` | 近三天热点涨停股汇总 | — |
-| `get_hot_spot_rotation(days=5, top_n=9)` | 热点轮动 | — |
+| `get_hot_spot_rotation(days=5, top_n=9)` | 热点轮动（客户端组合 daily_stats 组装） | — |
 | `get_lianban_stocks(date=None, limit=200)` | 连板股列表 | — |
 | `get_key_watch_stocks()` | 严重异动禁买名单 | — |
 

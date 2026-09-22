@@ -267,6 +267,9 @@ def main(argv: list[str]) -> int:
 
     返回 -> 进程退出码：0 成功；1 任意失败（错误详情已以 JSON 输出到 stdout）。
     """
+    # 清洗 token 首尾空白与控制字符（LLM 生成命令偶发混入 \r 等不可见字符，导致方法名/参数校验误报），并丢弃清洗后的空 token
+    argv = [cleaned for cleaned in (tok.strip() for tok in argv) if cleaned]
+
     # 无参数或 --help：打印用法
     if not argv or argv[0] in ("-h", "--help"):
         print(_USAGE)

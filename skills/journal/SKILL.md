@@ -82,7 +82,7 @@ from skills.journal.journal import (
 # 盘中读（defensive_reason 非空或 code != 200 → 当日按防守处理并记录）
 cli.py read_regime_state --trade_date 2026-09-07
 
-# 盘后推进（s 为当日收盘短线温度定格值；d 传接口原文，标签用于乐观转移背书——进升温/高潮需大盘 ∈ {修复, 升温}）
+# 盘后推进（s 为当日收盘短线温度定格值；d 传接口原文，标签用于乐观转移背书——进升温/高潮需大盘 ∈ {修复, 升温, 高潮}）
 cli.py regime_advance 2026-09-04 15 "修复(35)"
 cli.py regime_advance 2026-09-05 None "退潮(30)"   # s 缺值日
 
