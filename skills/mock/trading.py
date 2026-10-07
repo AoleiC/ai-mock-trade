@@ -430,6 +430,25 @@ def get_stock_price(stock_code: str) -> dict:
 
 
 # ==================== 八、主题关注管理 ====================
+# 实现已迁移到自选分组体系：关注主题 = 绑定 theme 类型动态分组（/api/web/favorite_groups/*），
+# 函数签名与返回字段保持旧结构不变
+
+# 拉取指定类型的分组列表（内部辅助；失败返回 None）
+def _list_groups_by_type(source_type: str, secret_key: str = None):
+    """
+    拉取当前账号指定 source_type 的动态分组列表（内部辅助）
+
+    入参：
+        source_type: str - 源类型（theme / jtcsm）
+        secret_key: str（可选）- 认证密钥
+
+    返回 -> list[dict] | None：分组元信息列表；接口失败返回 None
+    """
+    resp = _get("/api/web/favorite_groups/list", secret_key=secret_key)
+    if not isinstance(resp, dict) or resp.get("code") != 200:
+        return None
+    return [g for g in (resp.get("data") or []) if g.get("source_type") == source_type]
+
 
 # 关注主题
 def add_favorite_theme(
@@ -438,7 +457,7 @@ def add_favorite_theme(
     secret_key: str = None,
 ) -> dict:
     """
-    关注主题（主题体系）
+    关注主题（主题体系；实现 = 绑定 theme 动态分组）
 
     入参：
         theme_code: str（必传）- 主题代码（level1_code）
@@ -448,16 +467,17 @@ def add_favorite_theme(
     返回 -> dict（信封格式）：
         {"code": 200, "message": "success", "data": {"success": bool, ...}}
     """
-    return _post("/api/web/mock/favorite_theme/add", {
-        "theme_code": theme_code,
-        "theme_name": theme_name,
+    return _post("/api/web/favorite_groups/bind", {
+        "source_type": "theme",
+        "source_ref": theme_code,
+        "name": theme_name,
     }, secret_key=secret_key)
 
 
 # 取消关注主题
 def remove_favorite_theme(theme_code: str, secret_key: str = None) -> dict:
     """
-    取消关注主题
+    取消关注主题（实现 = 解绑 theme 动态分组）
 
     入参：
         theme_code: str（必传）- 主题代码
@@ -466,8 +486,9 @@ def remove_favorite_theme(theme_code: str, secret_key: str = None) -> dict:
     返回 -> dict（信封格式）：
         {"code": 200, "message": "success", "data": {"success": bool, ...}}
     """
-    return _post("/api/web/mock/favorite_theme/remove", {
-        "theme_code": theme_code,
+    return _post("/api/web/favorite_groups/unbind", {
+        "source_type": "theme",
+        "source_ref": theme_code,
     }, secret_key=secret_key)
 
 
@@ -483,9 +504,12 @@ def get_favorite_theme_list(secret_key: str = None) -> dict:
         data: list[dict]，每项含：
             theme_code: str  - 主题代码
             theme_name: str  - 主题名称
-            add_time: int    - 关注时间戳（秒级）
     """
-    return _get("/api/web/mock/favorite_theme/list", secret_key=secret_key)
+    groups = _list_groups_by_type("theme", secret_key)
+    if groups is None:
+        return {"code": 500, "message": "查询关注主题列表失败", "data": []}
+    data = [{"theme_code": g["source_ref"], "theme_name": g.get("name", "")} for g in groups]
+    return {"code": 200, "message": "success", "data": data}
 
 
 # 检查主题是否已关注
@@ -500,36 +524,9 @@ def check_favorite_theme(theme_code: str, secret_key: str = None) -> dict:
     返回 -> dict（信封格式）：
         data: {"is_favorite": bool}
     """
-    return _get("/api/web/mock/favorite_theme/check", {"theme_code": theme_code}, secret_key=secret_key)
-
-
-# 批量聚合各关注主题的成分股（顶部关注区域一次性拉取）
-def get_favorite_theme_stocks(
-    field: str = "zdf",
-    sort: str = "desc",
-    secret_key: str = None,
-) -> dict:
-    """
-    批量聚合各关注主题的成分股（供顶部关注区域一次性渲染）
-
-    入参：
-        field: str（可选，默认 "zdf"）- 排序字段，白名单：
-            zdf          - 涨幅
-            amount_main  - 主力
-            非法值回退为 "zdf"
-        sort: str（可选，默认 "desc"）- 排序方向，"desc" 降序 / "asc" 升序，非法值回退 "desc"
-        secret_key: str（可选，默认 DEFAULT_SECRET_KEY）- 认证密钥
-
-    返回 -> dict（信封格式）：
-        data: list[dict]，每个元素含：
-            theme_code: str   - 主题代码
-            theme_name: str   - 主题名称
-            stocks: list[dict] - 成分股列表（前 15 只，结构同 get_theme_stock_list）
-    """
-    return _get("/api/web/favorite_theme_stocks", {
-        "field": field,
-        "sort": sort,
-    }, secret_key=secret_key)
+    groups = _list_groups_by_type("theme", secret_key)
+    is_fav = bool(groups) and any(g["source_ref"] == theme_code for g in groups)
+    return {"code": 200, "message": "success", "data": {"is_favorite": is_fav}}
 
 
 # 单个关注主题的成分股（排序局部刷新用）
@@ -555,14 +552,27 @@ def get_favorite_theme_block_stocks(
             stocks: list[dict] - 成分股列表
             未关注或已取消时 data 为 None
     """
-    return _get("/api/web/favorite_theme_block_stocks", {
-        "theme_code": theme_code,
+    resp = _get("/api/web/favorite_groups/source_stocks", {
+        "source_type": "theme",
+        "source_ref": theme_code,
         "field": field,
-        "sort": sort,
+        "sort": 1 if sort == "desc" else 0,
     }, secret_key=secret_key)
+    if not isinstance(resp, dict) or resp.get("code") != 200:
+        return resp
+    block = resp.get("data")
+    if block is None:
+        return {"code": 200, "message": "success", "data": None}
+    return {"code": 200, "message": "success", "data": {
+        "theme_code": block.get("source_ref", theme_code),
+        "theme_name": block.get("name", ""),
+        "stocks": block.get("stocks", []),
+    }}
 
 
 # ==================== 九、"今日炒什么"事件关注管理 ====================
+# 实现已迁移到自选分组体系：关注事件 = 绑定 jtcsm 类型动态分组（/api/web/favorite_groups/*），
+# 函数签名与返回字段保持旧结构不变
 
 # 关注"今日炒什么"事件
 def add_favorite_jtcsm(
@@ -572,7 +582,7 @@ def add_favorite_jtcsm(
     secret_key: str = None,
 ) -> dict:
     """
-    关注"今日炒什么"事件
+    关注"今日炒什么"事件（实现 = 绑定 jtcsm 动态分组）
 
     入参：
         event_id: str（必传）- 事件 ID
@@ -583,17 +593,18 @@ def add_favorite_jtcsm(
     返回 -> dict（信封格式）：
         {"code": 200, "message": "success", "data": {"success": bool, ...}}
     """
-    return _post("/api/web/mock/favorite_jtcsm/add", {
-        "event_id": event_id,
-        "event_name": event_name,
-        "trade_date": trade_date,
+    return _post("/api/web/favorite_groups/bind", {
+        "source_type": "jtcsm",
+        "source_ref": event_id,
+        "source_date": trade_date,
+        "name": event_name,
     }, secret_key=secret_key)
 
 
 # 取消关注"今日炒什么"事件
 def remove_favorite_jtcsm(event_id: str, secret_key: str = None) -> dict:
     """
-    取消关注"今日炒什么"事件
+    取消关注"今日炒什么"事件（实现 = 解绑 jtcsm 动态分组）
 
     入参：
         event_id: str（必传）- 事件 ID
@@ -602,8 +613,9 @@ def remove_favorite_jtcsm(event_id: str, secret_key: str = None) -> dict:
     返回 -> dict（信封格式）：
         {"code": 200, "message": "success", "data": {"success": bool, ...}}
     """
-    return _post("/api/web/mock/favorite_jtcsm/remove", {
-        "event_id": event_id,
+    return _post("/api/web/favorite_groups/unbind", {
+        "source_type": "jtcsm",
+        "source_ref": event_id,
     }, secret_key=secret_key)
 
 
@@ -620,9 +632,19 @@ def get_favorite_jtcsm_list(secret_key: str = None) -> dict:
             event_id: str    - 事件 ID
             event_name: str  - 事件名称
             trade_date: str  - 事件交易日 YYYY-MM-DD
-            add_time: int    - 关注时间戳（秒级）
     """
-    return _get("/api/web/mock/favorite_jtcsm/list", secret_key=secret_key)
+    groups = _list_groups_by_type("jtcsm", secret_key)
+    if groups is None:
+        return {"code": 500, "message": "查询关注事件列表失败", "data": []}
+    data = [
+        {
+            "event_id": g["source_ref"],
+            "event_name": g.get("name", ""),
+            "trade_date": g.get("source_date") or "",
+        }
+        for g in groups
+    ]
+    return {"code": 200, "message": "success", "data": data}
 
 
 # 检查事件是否已关注
@@ -637,36 +659,9 @@ def check_favorite_jtcsm(event_id: str, secret_key: str = None) -> dict:
     返回 -> dict（信封格式）：
         data: {"is_favorite": bool}
     """
-    return _get("/api/web/mock/favorite_jtcsm/check", {"event_id": event_id}, secret_key=secret_key)
-
-
-# 批量聚合各关注事件的成分股
-def get_favorite_jtcsm_stocks(
-    field: str = "zdf",
-    sort: str = "desc",
-    secret_key: str = None,
-) -> dict:
-    """
-    批量聚合各关注事件的成分股（供热点页第二排一次性渲染）
-
-    入参：
-        field: str（可选，默认 "zdf"）- 排序字段，白名单：
-            zdf          - 涨幅
-            amount_main  - 主力
-            非法值回退为 "zdf"
-        sort: str（可选，默认 "desc"）- 排序方向，"desc" 降序 / "asc" 升序，非法值回退 "desc"
-        secret_key: str（可选，默认 DEFAULT_SECRET_KEY）- 认证密钥
-
-    返回 -> dict（信封格式）：
-        data: list[dict]，每个元素含：
-            event_id: str    - 事件 ID
-            event_name: str  - 事件名称
-            stocks: list[dict] - 成分股列表（前 10 只，结构同 get_jtcsm_event_stocks）
-    """
-    return _get("/api/web/favorite_jtcsm_stocks", {
-        "field": field,
-        "sort": sort,
-    }, secret_key=secret_key)
+    groups = _list_groups_by_type("jtcsm", secret_key)
+    is_fav = bool(groups) and any(g["source_ref"] == event_id for g in groups)
+    return {"code": 200, "message": "success", "data": {"is_favorite": is_fav}}
 
 
 # 单个关注事件的成分股（排序局部刷新用）
@@ -692,8 +687,19 @@ def get_favorite_jtcsm_block_stocks(
             stocks: list[dict] - 成分股列表
             未关注或已取消时 data 为 None
     """
-    return _get("/api/web/favorite_jtcsm_block_stocks", {
-        "event_id": event_id,
+    resp = _get("/api/web/favorite_groups/source_stocks", {
+        "source_type": "jtcsm",
+        "source_ref": event_id,
         "field": field,
-        "sort": sort,
+        "sort": 1 if sort == "desc" else 0,
     }, secret_key=secret_key)
+    if not isinstance(resp, dict) or resp.get("code") != 200:
+        return resp
+    block = resp.get("data")
+    if block is None:
+        return {"code": 200, "message": "success", "data": None}
+    return {"code": 200, "message": "success", "data": {
+        "event_id": block.get("source_ref", event_id),
+        "event_name": block.get("name", ""),
+        "stocks": block.get("stocks", []),
+    }}

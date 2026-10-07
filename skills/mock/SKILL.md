@@ -43,6 +43,7 @@ python skills/mock/cli.py --help          # 打印用法
 | 策略选股（创业板强趋势） | `cli.py market.get_strategy_trend_stocks 6` |
 | 策略选股（创业+科创大趋势） | `cli.py market.get_strategy_trend_stocks 10` |
 | 策略选股（沪深主板） | `cli.py market.get_strategy_trend_stocks 7` |
+| 策略选股（今日异动拉升） | `cli.py market.get_strategy_trend_stocks 4` |
 | 策略选股（大幅回撤） | `cli.py market.get_strategy_trend_stocks 21` |
 | 本地状态读写（市场阶段状态机 / 动态策略） | 见 `skills/journal/SKILL.md`，走 `skills/journal/cli.py` |
 | 盯盘 / 复盘总结上报 | `cli.py report.submit_summary watch "..."` |
@@ -327,13 +328,11 @@ cli.py trading.search_stocks 曙光
 | `remove_favorite_theme(theme_code)` | 取消关注主题 | `theme_code` |
 | `get_favorite_theme_list()` | 关注主题列表 | — |
 | `check_favorite_theme(theme_code)` | 主题是否已关注 | `theme_code` |
-| `get_favorite_theme_stocks(field="zdf", sort="desc")` | 各关注主题成分股聚合 | — |
 | `get_favorite_theme_block_stocks(theme_code, field="zdf", sort="desc")` | 单个关注主题成分股 | `theme_code` |
 
 **示例**：
 ```bash
 cli.py trading.add_favorite_theme theme_001 --theme_name 算力
-cli.py trading.get_favorite_theme_stocks --field amount_main --sort desc
 cli.py trading.get_favorite_theme_block_stocks theme_001 --field zdf --sort desc
 ```
 
@@ -345,7 +344,6 @@ cli.py trading.get_favorite_theme_block_stocks theme_001 --field zdf --sort desc
 | `remove_favorite_jtcsm(event_id)` | 取消关注事件 | `event_id` |
 | `get_favorite_jtcsm_list()` | 关注事件列表 | — |
 | `check_favorite_jtcsm(event_id)` | 事件是否已关注 | `event_id` |
-| `get_favorite_jtcsm_stocks(field="zdf", sort="desc")` | 各关注事件成分股聚合 | — |
 | `get_favorite_jtcsm_block_stocks(event_id, field="zdf", sort="desc")` | 单个关注事件成分股 | `event_id` |
 
 **示例**：
