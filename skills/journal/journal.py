@@ -92,7 +92,7 @@ _DOUBLE_ICE_DEPTH = 1        # 双冰观察日簇深：昨收盘已累计 1 冰 
 _REBOUND_SUSPEND_DAY = 1     # 冰点反弹延续通道的挂起日：days_since_ice == 1（末冰日后第 2 个交易日，与"6/6 反弹在末冰日后 2 日内"数据窗口对齐）
 _V_REPAIR_SUSPEND_DAY = 2    # V 型修复通道（通道 E）的挂起日：days_since_ice == 2（冰点簇存活最后一天——"冰点-大涨-回调-修复"四步形态的修复日典型位，当日收盘仍无冰则簇终结，窗口天然仅一日）
 _HOLIDAY_GAP_DAYS = 4        # 长假重置代理：相邻交易日自然日差 >= 4 全量重置（journal 无交易日历）
-_STALE_GAP_DAYS = 5          # 陈旧检测阈值：读取日与更新日自然日差 > 5 判复盘任务断档
+_STALE_GAP_DAYS = 5          # 陈旧检测阈值：读取日与更新日自然日差 > 5 判复盘任务断档（当日已核实 updated_date==最近已完成交易日时豁免，见 read_regime_state 长假豁免——国庆 / 春节 7+ 天假不误判）
 _HISTORY_KEEP = 90           # history 滚动保留条数（> 60 日重放窗口，供阈值重拟合）
 
 # 状态机持久化文件名（滚动单文件，整体原子覆盖写，不参与按日清理）
@@ -320,11 +320,17 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
                                                #   第 1 日必为双强惯性日，通道 C/D 视同升温节点；第 2 日起 false，全禁）
             "updated_date": "2026-09-03",     # str，文件最近一次盘后更新日
             "defensive_reason": None,         # str | None，非空 → 当日按防守处理并记录：
-                                              #   "陈旧防御（复盘断档）"（自然日差 > 5）
-                                              #   "长假盘中防御"（自然日差 >= 4 且 <= 5）
-                                              #   "复盘断档防御"（自然日差 == 2：相邻交易日差只可能是 1/3/>=4，差 2 必为漏复盘）
+                                              #   "陈旧防御（复盘断档）"（自然日差 > 5；当日已核实豁免，见 holiday_gap_exempt）
+                                              #   "长假盘中防御"（自然日差 >= 4 且 <= 5；当日已核实豁免）
+                                              #   "复盘断档防御"（自然日差 == 2：相邻交易日差只可能是 1/3/>=4，差 2 必为漏复盘，不豁免）
             "effective_state": "ice_point",   # str，当日实际生效阶段（defensive_reason 非空时为 defense）
             "effective_state_label": "冰点期",  # str，effective_state 的中文标签
+            "verified_trade_date": "2026-09-03",  # str | None，已用 daily_indicators_history 核实的最近已完成交易日
+                                                  #   （rebuild 重放末条 / advance 推进日；旧文件无此字段为 None）
+            "verified_asof": "2026-09-04",        # str | None，核实发生的交易日（== 读取日且核实值 == updated_date
+                                                  #   → 长假类自然日差豁免生效；跨日即失效，须重新核实）
+            "holiday_gap_exempt": False,          # bool，本次读取是否因"当日已核实"豁免了长假类自然日差防御
+                                                  #   （如国庆 09-30 → 10-08 差 8 天，状态机已是最新则不误判陈旧防御）
         }
         文件缺失 / 损坏 / JSON 解析失败 → {"code": 404, "error": ..., "defensive_reason": ..., "effective_state": "defense"}
     """
@@ -353,10 +359,20 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
     except ValueError:
         return {"code": 400, "error": f"trade_date {trade_date!r} 或文件 updated_date {state['updated_date']!r} 日期格式非法",
                 "defensive_reason": "日期格式异常", "effective_state": "defense", "effective_state_label": "退潮期"}
+    # 长假豁免（总纲 §3.1 防呆红线的代码化）：当日已由 rebuild / advance 用
+    # daily_indicators_history（服务端权威交易日序列）核实过「updated_date == 最近已完成交易日」
+    # （verified_asof == 读取日 且 verified_trade_date == updated_date）时，
+    # 其后到读取日的大自然日差属假期休市而非复盘断档（如国庆 09-30 → 10-08 差 8 天），
+    # 豁免「陈旧防御 / 长假盘中防御」两类；gap == 2 的复盘断档不豁免
+    # （差 2 必为中间漏了一个交易日复盘，必须重新 rebuild 核实）
+    holiday_verified = (
+        state.get("verified_asof") == trade_date
+        and state.get("verified_trade_date") == state["updated_date"]
+    )
     if gap > _STALE_GAP_DAYS:
-        defensive_reason = f"陈旧防御（复盘断档：更新日 {state['updated_date']} 距 {trade_date} 已 {gap} 自然日）"
+        defensive_reason = None if holiday_verified else f"陈旧防御（复盘断档：更新日 {state['updated_date']} 距 {trade_date} 已 {gap} 自然日）"
     elif gap >= _HOLIDAY_GAP_DAYS:
-        defensive_reason = f"长假盘中防御（更新日 {state['updated_date']} 距 {trade_date} 为 {gap} 自然日）"
+        defensive_reason = None if holiday_verified else f"长假盘中防御（更新日 {state['updated_date']} 距 {trade_date} 为 {gap} 自然日）"
     elif gap == 2:
         defensive_reason = f"复盘断档防御（更新日 {state['updated_date']} 距 {trade_date} 为 2 自然日，中间漏了一个交易日复盘）"
 
@@ -391,6 +407,10 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
         "defensive_reason": defensive_reason,
         "effective_state": effective,
         "effective_state_label": _STATE_LABELS[effective],
+        # 核实标记透传（长假豁免的可观测性：agent / 日志可据此确认豁免依据）
+        "verified_trade_date": state.get("verified_trade_date"),
+        "verified_asof": state.get("verified_asof"),
+        "holiday_gap_exempt": holiday_verified and gap >= _HOLIDAY_GAP_DAYS,
     }
 
 
@@ -471,6 +491,10 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
         "mid_count": run["mid_count"],
         "saw_peak_70": run["saw_peak_70"],
         "last_change_date": run["last_change_date"],
+        # 核实标记：advance 推进到 trade_date = 当日收盘定格已入状态机，
+        # 视为已核实「trade_date 为最近已完成交易日」（供 read_regime_state 长假豁免判定）
+        "verified_trade_date": trade_date,
+        "verified_asof": trade_date,
         "history": history,
     }
     _write_regime_file(new_file)
@@ -519,7 +543,11 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
             "history": [                      # list[dict]，逐日轨迹：
                 {"date": "...", "s": 20, "d": 45, "state": "ice_point", "cluster_depth": 2}
             ],
-            "written": False,                 # bool，是否已写回状态文件
+            "written": False,                 # bool，是否已写回状态文件（写回时同步写入核实标记
+                                              #   verified_trade_date=重放末条交易日 / verified_asof=before_date：
+                                              #   raw 是服务端权威交易日序列，重放末条即最近已完成交易日——
+                                              #   盘中自愈后重读，长假类自然日差防御（如国庆 gap=8>5）被豁免，
+                                              #   defensive_reason 归 null，不再误报"状态读取异常"）
         }
         raw 结构非法 → {"code": 400, "error": ...}
     """
@@ -603,6 +631,13 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
             "mid_count": run["mid_count"],
             "saw_peak_70": run["saw_peak_70"],
             "last_change_date": run["last_change_date"],
+            # 核实标记：raw（daily_indicators_history）是服务端权威交易日序列，
+            # 重放末条 = 最近已完成交易日——已核实 updated_date 没有落后；
+            # 其后到 before_date（调用方声明的当日）的大自然日差属假期休市而非复盘断档，
+            # 供 read_regime_state 豁免长假类防御（国庆 / 春节 7+ 天假 gap>5 不再误判陈旧防御）。
+            # before_date 为 None（人工全量重建，未声明当日）时写 None → 不参与豁免，保守走原判定
+            "verified_trade_date": run["updated_date"],
+            "verified_asof": before_date,
             "history": history[-_HISTORY_KEEP:],
         }
         _write_regime_file(new_file)

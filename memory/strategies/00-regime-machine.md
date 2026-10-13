@@ -84,6 +84,10 @@ elif cluster_depth > 0:  # 有活动簇且当日未冰（挂起）
   "mid_count": 0,                 // 高潮段内连续 45≤s<55 计数（未见极值段的双日回落出口用）
   "saw_peak_70": false,           // 本高潮段内是否曾 s≥70（退潮分歧期出口用，跨段重置）
   "last_change_date": "2026-09-02", // 最近一次状态切换日
+  "verified_trade_date": "2026-09-03", // 已用 daily_indicators_history 核实的最近已完成交易日
+                                    //   （rebuild 重放末条 / advance 推进日；旧文件无此字段为 null）
+  "verified_asof": "2026-09-04",   // 核实发生的交易日（rebuild 时 = before_date；advance 时 = trade_date。
+                                    //   == 读取日 且 verified_trade_date == updated_date → read 豁免长假类防御）
   "history": [                    // 轨迹（滚动 90 日，> 重放窗口 60），供复盘 / 阈值重拟合 / 战法一取昨收 s/d
     {"date": "2026-09-02", "s": 20, "d": 45, "state": "ice_point", "cluster_depth": 1}
   ]
@@ -95,6 +99,7 @@ elif cluster_depth > 0:  # 有活动簇且当日未冰（挂起）
 - **读 + 自愈（状态机推进的唯一路径，不依赖复盘）**：盘中每轮第 0 步 `journal.read_regime_state --trade_date <当日>`（先于总纲 §3.1 其余 4 项）→ 阶段 + 通道资格 + 防御检测。发现 `code != 200`、`defensive_reason` 非空、或 `updated_date` 落后于最近已完成交易日（`get_daily_indicators_history` 的 `dates` 中 < 当日的最后一日）→ 当场自愈：接口返回传 `journal.regime_rebuild --write_back true --before_date <当日>` 重放写回后重读（**只要缺就自愈，不限次数**；`--before_date` 排除当日行——当日值可能是盘中临时值而非收盘定格）；自愈后仍失败 / 仍 defensive → 当日按防守处理并记录
 - **写**：仅由盘中自愈的 `journal.regime_rebuild --write_back true --before_date <当日>` 原子覆盖写入；当日收盘定格在次日首轮盯盘自愈时进入状态。**复盘不再推进状态机**（复盘只做今日操作 / 不操作的旁观者分析，总纲 §7.2）
 - **陈旧 / 断档 / 长假盘中防御**（自然日差代理，journal 无交易日历）：`trade_date` 与 `updated_date` 自然日差 >5 → "陈旧防御（复盘断档）"；≥4 且 ≤5 → "长假盘中防御"；**=2 → "复盘断档防御"（相邻交易日自然日差只可能是 1/3/≥4，差 2 必为中间漏了一个交易日复盘）**；三者同为当日按防守处理并记录，**复盘时一律用 `regime_rebuild` 重放补齐断档日**（不要用 advance 逐日补，会跳过中间日的温度）
+- **长假豁免（防呆红线的代码化）**：`rebuild` / `advance` 写回时落核实标记 `verified_trade_date`（重放末条 / 推进日）+ `verified_asof`（核实发生的交易日）。`read_regime_state` 读取时若 `verified_asof == 读取日` 且 `verified_trade_date == updated_date`——即**当日已用服务端权威交易日序列核实过"状态机已是最新"**——自然日差 >5 / ≥4 两类长假防御被豁免（`defensive_reason=null`，返回 `holiday_gap_exempt=true`）：国庆 / 春节 7+ 天假后首日不再误判"陈旧防御"。豁免**仅当日有效**（跨日 `verified_asof` 过期 → 重新走防御判定 + 自愈核实）；`=2` 复盘断档**不豁免**（差 2 必为漏了一个交易日，必须 rebuild 核实）。盘中自愈闭环：`defensive_reason` 非空 → `regime_rebuild --before_date <当日>` 重放写回（含核实标记）→ 重读即豁免
 
 **可重建性**：状态是收盘 s/d 序列的纯函数——文件缺失 / 损坏 / 陈旧时，复盘调 `get_daily_indicators_history --days 60` 取数后 `journal.regime_rebuild --raw @<file> --write_back true` 由代码完整重放重建。重放起点"防守 + 计数清零"盲初始化，偏差**有界且方向保守**（所有活跃态出口均通往防守 / 冰点，偏差最迟在首个活跃段出口自愈）。
 
