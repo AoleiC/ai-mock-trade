@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import datetime as dt
 import logging
 import os
@@ -46,7 +47,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+
+import watch_context
 
 # A 股盘中两段：上午 09:30-11:30、下午 13:00-15:00（闭区间表示闭市后不再触发）
 MORNING_START = (9, 30)
@@ -365,6 +368,29 @@ def build_command(cli: str, prompt: str, project_dir: Path) -> List[str]:
     return ["claude", "-p", prompt]
 
 
+# 盯盘 prompt 组装：机械层前置（对账 / 状态机 / 五项必读拉取）+ 基础指令
+def build_watch_prompt(base_prompt: str, project_dir: Path, logger: logging.Logger) -> str:
+    """为基础盯盘指令拼接机械层注入块（零 token 代劳的取数与自愈结果）。
+
+    机械层（watch_context）负责：昨日温度定格对账（每日一次幂等）、状态机读取 + 自愈、
+    五项必读数据拉取，结果以注入块形式拼在 prompt 尾部 —— agent 直接消费不重复调用。
+    全容错：机械层整体异常时返回原 prompt（行为退回无注入的旧模式，绝不阻塞盯盘）。
+
+    参数:
+        base_prompt: 基础盯盘指令（--prompt-watch / WATCH_PROMPT_WATCH）
+        project_dir: 项目根目录
+        logger: 调度器 logger（注入规模留痕）
+    返回:
+        拼接后的完整 prompt（str）
+    """
+    block = watch_context.build_watch_context(project_dir, logger)
+    if not block:
+        logger.warning("机械层注入块为空，本轮退回无注入模式")
+        return base_prompt
+    logger.info("机械层注入完成: 注入块 %d 字符", len(block))
+    return f"{base_prompt}\n\n{block}"
+
+
 def seconds_until_window(now: dt.datetime) -> int:
     """计算到下一个盘中窗口起点（或盘后复盘点）的秒数，用于 sleep 时长。
 
@@ -406,8 +432,8 @@ def run_cli(
     log_dir: Path,
     logger: logging.Logger,
     stop_flag: dict | None = None,
-) -> bool:
-    """同步调用本地 AI CLI 执行一次盯盘或复盘，返回是否成功。
+) -> Optional[str]:
+    """同步调用本地 AI CLI 执行一次盯盘或复盘。
 
     行为约定（按 AGENTS.md 日志规范）：
     - stdout 实时流到调用方终端（用户要"看得到 AI 在干啥"，不能黑盒）
@@ -416,14 +442,31 @@ def run_cli(
     - 收到 stop 请求：先 SIGTERM 礼貌请退，2 秒不退就 SIGKILL 强杀
     - prompt 注入权威当前时间：模型无内置时钟，不注入则总结标记 / 摘要行的时间
       会被模型臆造（曾出现 09:53 触发的轮次写出 14:12 的幻觉时间戳）
+
+    参数:
+        cli: AI CLI 名称（opencode / claude）
+        prompt: 完整 prompt（含机械层注入块）
+        project_dir: 项目根目录（子进程 cwd）
+        log_dir: run 日志目录
+        logger: 调度器 logger
+        stop_flag: 停止标志字典（可空）
+    返回:
+        None 表示成功；否则返回错误类别字符串：
+        "service_overload" = 服务端过载（负载较高 / 529）—— 立即重试同样会失败，调度器据此等下一轮
+        "cli_error" = 其它非零退出（含内容安全拦截等）
     """
     # 注入当前时间作为权威时间源：agent 输出的盯盘/复盘总结标记与摘要行时间必须逐字采用此值
     prompt = f"{prompt}（当前时间 {dt.datetime.now():%Y-%m-%d %H:%M:%S}，输出中的总结标记与摘要行时间必须逐字采用此值）"
     cmd = build_command(cli, prompt, project_dir)
     log_file = log_dir / f"run-{dt.datetime.now():%Y%m%d-%H%M%S}.log"
 
-    logger.info("触发盯盘: cli=%s, project=%s, prompt=%s", cli, project_dir, prompt)
-    logger.info("执行命令: %s", " ".join(shlex.quote(c) for c in cmd))
+    # 日志展示用 prompt 摘要：机械层注入后 prompt 可达数万字符，全量打印会刷爆调度器日志，
+    # 只留前 120 字符 + 总长（完整内容在 run-*.log 与注入产物文件中可查）
+    prompt_display = prompt[:120] + (f"...(共 {len(prompt)} 字符)" if len(prompt) > 120 else "")
+    logger.info("触发盯盘: cli=%s, project=%s, prompt=%s", cli, project_dir, prompt_display)
+    # 命令行同样只展示骨架（prompt 占位），避免重复刷屏
+    cmd_display = [cmd[0], cmd[1], f"<prompt {len(prompt)} 字符>"]
+    logger.info("执行命令: %s", " ".join(shlex.quote(c) for c in cmd_display))
     # 把这次调用的「开始/结束」边界打出来，方便在终端扫日志时定位每次触发
     print(f"\n========== 盯盘开始 {dt.datetime.now():%H:%M:%S} ==========", flush=True)
 
@@ -442,6 +485,10 @@ def run_cli(
         # 拿到一个能直接传给 Popen 的「行」stdin/stdout/stderr 三合一
         # 简单做法：把 PTY 主端的数据同时写给用户终端（sys.stdout）和日志文件
         log_fh = open(log_file, "w", encoding="utf-8")
+        # 跨 chunk 增量 UTF-8 解码器：os.read 的 4096 字节边界可能切在多字节汉字中间，
+        # 逐 chunk 独立 decode + errors="replace" 会把切断的半个字符写成乱码（U+FFFD）；
+        # 增量解码器会把不完整的多字节序列缓存在内部，等下一个 chunk 补齐后再输出
+        utf8_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         pty_writer_stop = threading.Event()
 
         def pty_to_terminal_and_log():
@@ -460,10 +507,13 @@ def run_cli(
                                     if not chunk:
                                         break
                                     os.write(sys.stdout.fileno(), chunk)
-                                    log_fh.write(chunk.decode("utf-8", errors="replace"))
+                                    log_fh.write(utf8_decoder.decode(chunk))
                                     log_fh.flush()
                             except OSError:
                                 pass
+                            # 排空结束：冲出解码器内残留的尾部字节（断在多字节序列上的残余按 replace 落 U+FFFD）
+                            log_fh.write(utf8_decoder.decode(b"", final=True))
+                            log_fh.flush()
                             return
                         continue
                     try:
@@ -477,8 +527,8 @@ def run_cli(
                         os.write(sys.stdout.fileno(), chunk)
                     except OSError:
                         pass
-                    # 写一份到日志文件
-                    log_fh.write(chunk.decode("utf-8", errors="replace"))
+                    # 写一份到日志文件（经增量解码器，跨 chunk 边界的多字节字符不乱码）
+                    log_fh.write(utf8_decoder.decode(chunk))
                     log_fh.flush()
             except Exception:  # noqa: BLE001
                 pass
@@ -524,12 +574,12 @@ def run_cli(
             _current_process["proc"] = None
     except FileNotFoundError:
         logger.error("CLI 未找到: %s，请确认已安装并在 PATH 中", cmd[0])
-        return False
+        return "cli_error"
     except Exception as exc:  # noqa: BLE001
         logger.error("执行 CLI 异常: cli=%s, err=%s", cli, exc)
         if process is not None and process.poll() is None:
             _terminate_process(process)
-        return False
+        return "cli_error"
 
     # 本轮产出归档：提取总结块追加到 data/watch-summary|review-summary-{date}.md
     # 放在 CLI try/except 之外：归档自身的异常不得误报为 CLI 执行失败（函数内部已全容错）
@@ -539,17 +589,26 @@ def run_cli(
 
     if result == 0:
         logger.info("盯盘完成: cli=%s, returncode=0, stderr日志=%s", cli, log_file.name)
-        return True
+        return None
 
     # 退出非零：按 AGENTS.md 规范把详细入参与关联变量打出来（CLI 名 + 退出码 + 日志路径）
+    # prompt 用摘要而非全文 —— 机械层注入后 prompt 可达数万字符，全量打印会刷爆调度器日志
     logger.error(
         "CLI 退出非零: cli=%s, prompt=%s, returncode=%d, stderr日志=%s, 可查看文件了解详情",
         cli,
-        prompt,
+        prompt_display,
         result,
         log_file.name,
     )
-    return False
+    # 识别服务端过载（"负载较高" / 529）：此时立即重试同样会失败，调度器据此等下一轮触发
+    try:
+        tail = log_file.read_text(encoding="utf-8", errors="replace")[-2000:]
+    except OSError:
+        tail = ""
+    if "负载较高" in tail or "(529)" in tail:
+        logger.warning("CLI 失败原因为服务端过载（负载较高 / 529），跳过本轮立即重试，等下一轮触发")
+        return "service_overload"
+    return "cli_error"
 
 
 def _terminate_process(process: subprocess.Popen, grace_seconds: float = 2.0) -> None:
@@ -622,11 +681,14 @@ def main() -> int:
 
     # 单次执行模式：不写 PID 文件、不进循环，直接跑一次对应 prompt 后退出
     if args.once is not None:
-        prompt = args.prompt_watch if args.once == "watch" else args.prompt_review
-        logger.info("单次执行模式: mode=%s, cli=%s, prompt=%s", args.once, args.cli, prompt)
-        ok = run_cli(args.cli, prompt, args.project_dir, args.log_dir, logger, stop_flag)
-        logger.info("单次执行完成: mode=%s, ok=%s", args.once, ok)
-        return 0 if ok else 1
+        # 盯盘单次执行同样走机械层注入（与常驻循环行为一致）；复盘不注入（每日一次，成本不敏感）
+        prompt = args.prompt_review
+        if args.once == "watch":
+            prompt = build_watch_prompt(args.prompt_watch, args.project_dir, logger)
+        logger.info("单次执行模式: mode=%s, cli=%s, prompt=%s", args.once, args.cli, prompt[:120])
+        err = run_cli(args.cli, prompt, args.project_dir, args.log_dir, logger, stop_flag)
+        logger.info("单次执行完成: mode=%s, ok=%s", args.once, err is None)
+        return 0 if err is None else 1
 
     # 写 PID 文件，便于从其他终端用 kill 精确控制
     # 启动时若发现已有同 pid 在跑，立即拒绝启动（防重复实例）
@@ -707,15 +769,16 @@ def main() -> int:
             ):
                 today_str = now.date().isoformat()
                 if today_review_done != today_str:
-                    ok = run_cli(args.cli, args.prompt_review, args.project_dir, args.log_dir, logger, stop_flag)
-                    logger.info("复盘结果: ok=%s", ok)
+                    err = run_cli(args.cli, args.prompt_review, args.project_dir, args.log_dir, logger, stop_flag)
+                    logger.info("复盘结果: ok=%s", err is None)
                     # 复盘失败延时 10 秒后重试一次（仅一次），再失败则放弃当天复盘
-                    if not ok and not stop_flag["stop"]:
+                    # 服务端过载时立即重试同样会失败，跳过重试等次日人工补做
+                    if err and err != "service_overload" and not stop_flag["stop"]:
                         logger.info("复盘失败，延时 10 秒后重试一次")
                         _interruptible_sleep(10, stop_flag)
                         if not stop_flag["stop"]:
-                            ok = run_cli(args.cli, args.prompt_review, args.project_dir, args.log_dir, logger, stop_flag)
-                            logger.info("复盘重试结果: ok=%s", ok)
+                            err = run_cli(args.cli, args.prompt_review, args.project_dir, args.log_dir, logger, stop_flag)
+                            logger.info("复盘重试结果: ok=%s", err is None)
                     today_review_done = today_str
                 # 不论成功失败都把"下一次到期"推后 interval 分钟
                 last_trigger_at = now
@@ -728,15 +791,22 @@ def main() -> int:
                     logger.info("启动后第 1 次盯盘（启动时刻 %s）", start_time.strftime("%H:%M:%S"))
                 else:
                     logger.info("本次盯盘距上次 %d 分钟", interval)
-                ok = run_cli(args.cli, args.prompt_watch, args.project_dir, args.log_dir, logger, stop_flag)
-                logger.info("盯盘结果: ok=%s", ok)
-                # 失败延时 10 秒后重试一次（仅一次），再失败则放过等下轮
-                if not ok and not stop_flag["stop"]:
-                    logger.info("盯盘失败，延时 10 秒后重试一次")
-                    _interruptible_sleep(10, stop_flag)
-                    if not stop_flag["stop"]:
-                        ok = run_cli(args.cli, args.prompt_watch, args.project_dir, args.log_dir, logger, stop_flag)
-                        logger.info("盯盘重试结果: ok=%s", ok)
+                # 每轮重新组装机械层注入（数据新鲜；对账在机械层内每日一次幂等）
+                watch_prompt = build_watch_prompt(args.prompt_watch, args.project_dir, logger)
+                err = run_cli(args.cli, watch_prompt, args.project_dir, args.log_dir, logger, stop_flag)
+                logger.info("盯盘结果: ok=%s", err is None)
+                # 失败延时 10 秒后重试一次（仅一次），重试重新组装注入（避免复用陈旧快照）
+                # 服务端过载时立即重试必然再失败（曾连续 5 轮 529 空跑），跳过本轮重试等下一轮触发
+                if err and not stop_flag["stop"]:
+                    if err == "service_overload":
+                        logger.info("盯盘失败（服务端过载），跳过本轮重试，等下一轮触发")
+                    else:
+                        logger.info("盯盘失败，延时 10 秒后重试一次")
+                        _interruptible_sleep(10, stop_flag)
+                        if not stop_flag["stop"]:
+                            watch_prompt = build_watch_prompt(args.prompt_watch, args.project_dir, logger)
+                            err = run_cli(args.cli, watch_prompt, args.project_dir, args.log_dir, logger, stop_flag)
+                            logger.info("盯盘重试结果: ok=%s", err is None)
                 last_trigger_at = now
                 next_due = last_trigger_at + dt.timedelta(minutes=interval)
             else:

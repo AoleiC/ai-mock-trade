@@ -91,6 +91,9 @@ _OPTIMISTIC_LABELS = ("修复", "升温", "高潮")  # 乐观转移（进升温 
 _DOUBLE_ICE_DEPTH = 1        # 双冰观察日簇深：昨收盘已累计 1 冰 → 次日为潜在双冰日（开放回暖试错 + 尾盘低吸双路径）
 _REBOUND_SUSPEND_DAY = 1     # 冰点反弹延续通道的挂起日：days_since_ice == 1（末冰日后第 2 个交易日，与"6/6 反弹在末冰日后 2 日内"数据窗口对齐）
 _V_REPAIR_SUSPEND_DAY = 2    # V 型修复通道（通道 E）的挂起日：days_since_ice == 2（冰点簇存活最后一天——"冰点-大涨-回调-修复"四步形态的修复日典型位，当日收盘仍无冰则簇终结，窗口天然仅一日）
+_WARM_PROBE_MIN_S = 40       # 回暖试探通道（通道 G）的 s 下限：三连升后已爬回修复中段（40 <= s < 55，上限复用 _UP_THRESHOLD）
+_WARM_PROBE_RISE_DAYS = 3    # 回暖试探通道要求的连续上升交易日数（缺数日透明跳过，与既有连续计数口径一致）
+_WARM_PROBE_ICE_LOOKBACK = 10  # 回暖试探的冰点回看窗口：近 10 个有效收盘内须出现过 s <= 25（修复必须爬自冰区，排除高潮崩塌后的第一波逃命反弹）
 _HOLIDAY_GAP_DAYS = 4        # 长假重置代理：相邻交易日自然日差 >= 4 全量重置（journal 无交易日历）
 _STALE_GAP_DAYS = 5          # 陈旧检测阈值：读取日与更新日自然日差 > 5 判复盘任务断档（当日已核实 updated_date==最近已完成交易日时豁免，见 read_regime_state 长假豁免——国庆 / 春节 7+ 天假不误判）
 _HISTORY_KEEP = 90           # history 滚动保留条数（> 60 日重放窗口，供阈值重拟合）
@@ -115,6 +118,8 @@ def _blank_regime() -> dict:
         "next_day_double_ice_ready": False,  # bool，双冰观察日资格（预计算字段，只读不自判）
         "next_day_rebound_channel_open": False,  # bool，冰点反弹延续日资格（预计算字段，只读不自判）
         "next_day_v_repair_ready": False,   # bool，V 型修复日资格（通道 E，预计算字段，只读不自判）
+        "next_day_warm_probe_ready": False,  # bool，回暖试探日资格（通道 G，预计算字段，只读不自判）
+        "s_window": [],                     # list[int]，近端有效收盘 s 滚动窗口（仅运行态不落盘；通道 G 三连升 / 冰点回看的数据源，advance 时从 history 重建）
     }
 
 
@@ -186,8 +191,11 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int], d_label: Optional
         st["next_day_double_ice_ready"] = False
         st["next_day_rebound_channel_open"] = False
         st["next_day_v_repair_ready"] = False
+        st["next_day_warm_probe_ready"] = False
         return st
     st["missing_count"] = 0
+    # 有效收盘 s 滚动窗口：缺数日不追加（透明跳过口径，与连续计数一致）；窗口滚动保留最近 10 个有效值
+    st["s_window"] = (list(st.get("s_window") or []) + [s])[-_WARM_PROBE_ICE_LOOKBACK:]
 
     # 连续计数（收盘 s 序列的纯函数，与当日所处状态无关）
     st["up_count"] = st["up_count"] + 1 if s >= _UP_THRESHOLD else 0
@@ -278,6 +286,27 @@ def _advance_one(run: dict, trade_date: str, s: Optional[int], d_label: Optional
         and st["days_since_ice"] == _V_REPAIR_SUSPEND_DAY
         and st["up_count"] == 0
     )
+    # 回暖试探日预计算（通道 G 资格；agent 盘中只读该字段，不自行判定）：
+    # 填补"双温死角"——冰点簇已终结（或浅簇本就无冰点通道资格）且升温双日确认未达（up_count == 0）时，
+    # s 三连升爬回 40~54 修复中段 + 近 10 个有效收盘内出现过冰点日（修复必须爬自冰区，排除高潮崩塌后的
+    # 第一波逃命反弹，10-13 型单日假修复亦被三连升排除）+ 当日大盘标签乐观背书 + 其余四通道全关（不叠开）
+    # → 次日豁免退潮禁令，开放通道 G 回暖试探（40 分册 §二G，观察级）
+    recent_s = st.get("s_window") or []
+    rising_streak = len(recent_s) >= _WARM_PROBE_RISE_DAYS and all(
+        recent_s[-i - 1] > recent_s[-i - 2] for i in range(_WARM_PROBE_RISE_DAYS - 1)
+    )
+    st["next_day_warm_probe_ready"] = (
+        st["current_state"] == "defense"
+        and st["up_count"] == 0
+        and not st["next_day_channel_open"]
+        and not st["next_day_double_ice_ready"]
+        and not st["next_day_rebound_channel_open"]
+        and not st["next_day_v_repair_ready"]
+        and rising_streak
+        and _WARM_PROBE_MIN_S <= s < _UP_THRESHOLD
+        and any(v <= _ICE_THRESHOLD for v in recent_s)
+        and optimistic_ok
+    )
     return st
 
 
@@ -315,6 +344,9 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
                                               #   挂起第 1 日豁免退潮禁令，通道 A2/D 延续开放，见 10 分册 §一）
             "next_day_v_repair_ready": False,   # bool，当日是否为 V 型修复日（通道 E，预计算字段，只读不自判：
                                               #   冰点簇挂起第 2 日豁免退潮禁令，尾盘 14:30~14:55 小仓修复先手，见 40 分册 §二E）
+            "next_day_warm_probe_ready": False,  # bool，当日是否为回暖试探日（通道 G，预计算字段，只读不自判：
+                                              #   冰点后修复中段豁免退潮禁令，10:00 后当帧三条件 + 方向验证，单只试错 5%，见 40 分册 §二G）
+            "channel_g_today": False,           # bool，派生：当日通道 G（回暖试探）是否开放（= next_day_warm_probe_ready 的当日视图）
             "uptrend_first_day": False,       # bool，高潮第 1 日（读取时派生：uptrend 且 last_change_date == updated_date，
                                                #   即状态恰在最近已完成交易日转入高潮——转入背书要求当日大盘 ∈ {修复, 升温, 高潮}，
                                                #   第 1 日必为双强惯性日，通道 C/D 视同升温节点；第 2 日起 false，全禁）
@@ -388,6 +420,8 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
     # next_day_* 家族是"昨写今用"语义（昨收盘重放写入、当日晨起生效），易被误读为"次日才生效"；
     # 本字段名直述"今日通道 E 是否开放"，agent 盘中消费本字段判定通道 E 资格，消除时序歧义
     channel_e_today = bool(state.get("next_day_v_repair_ready", False))
+    # 通道 G 当日开放视图（派生字段，不落盘）：与 channel_e_today 同款命名语义，消除"昨写今用"时序歧义
+    channel_g_today = bool(state.get("next_day_warm_probe_ready", False))
     return {
         "code": 200,
         "trade_date": trade_date,
@@ -400,7 +434,9 @@ def read_regime_state(trade_date: Optional[str] = None) -> dict:
         "next_day_double_ice_ready": state.get("next_day_double_ice_ready", False),
         "next_day_rebound_channel_open": state.get("next_day_rebound_channel_open", False),
         "next_day_v_repair_ready": state.get("next_day_v_repair_ready", False),
+        "next_day_warm_probe_ready": state.get("next_day_warm_probe_ready", False),
         "channel_e_today": channel_e_today and not defensive_reason,  # bool，派生：当日通道 E（V 型修复尾盘先手）是否开放（= next_day_v_repair_ready 的当日视图，昨写今用；防御触发日强制 false）
+        "channel_g_today": channel_g_today and not defensive_reason,  # bool，派生：当日通道 G（回暖试探）是否开放（= next_day_warm_probe_ready 的当日视图，昨写今用；防御触发日强制 false）
         "uptrend_first_day": uptrend_first_day and not defensive_reason,
         "last_d_label": state.get("last_d_label"),
         "updated_date": state["updated_date"],
@@ -464,6 +500,11 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
         datetime.strptime(trade_date, "%Y-%m-%d") - datetime.strptime(prev_updated, "%Y-%m-%d")
     ).days >= _HOLIDAY_GAP_DAYS
 
+    # 通道 G 数据源回填：状态文件不落盘 s_window（运行态字段），从 history 末段有效收盘 s 重建滚动窗口
+    state["s_window"] = [
+        h.get("s") for h in state.get("history", []) if isinstance(h, dict) and h.get("s") is not None
+    ][-_WARM_PROBE_ICE_LOOKBACK:]
+
     run = _advance_one(state, trade_date, s_val, d_label)
 
     # 组装持久化结构（契约见 00-regime-machine.md §四）并原子覆盖写
@@ -485,6 +526,7 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
         "next_day_double_ice_ready": run["next_day_double_ice_ready"],
         "next_day_rebound_channel_open": run["next_day_rebound_channel_open"],
         "next_day_v_repair_ready": run["next_day_v_repair_ready"],
+        "next_day_warm_probe_ready": run["next_day_warm_probe_ready"],
         "last_d_label": run.get("last_d_label"),
         "missing_count": run["missing_count"],
         "up_count": run["up_count"],
@@ -513,6 +555,7 @@ def regime_advance(trade_date: str, s=None, d=None) -> dict:
         "next_day_double_ice_ready": run["next_day_double_ice_ready"],
         "next_day_rebound_channel_open": run["next_day_rebound_channel_open"],
         "next_day_v_repair_ready": run["next_day_v_repair_ready"],
+        "next_day_warm_probe_ready": run["next_day_warm_probe_ready"],
         "changed": run["current_state"] != prev_state,
         "holiday_reset": holiday_reset,
     }
@@ -625,6 +668,7 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
             "next_day_double_ice_ready": run["next_day_double_ice_ready"],
             "next_day_rebound_channel_open": run["next_day_rebound_channel_open"],
             "next_day_v_repair_ready": run["next_day_v_repair_ready"],
+            "next_day_warm_probe_ready": run["next_day_warm_probe_ready"],
             "last_d_label": run.get("last_d_label"),
             "missing_count": run["missing_count"],
             "up_count": run["up_count"],
@@ -655,6 +699,7 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
             "next_day_double_ice_ready": run["next_day_double_ice_ready"],
             "next_day_rebound_channel_open": run["next_day_rebound_channel_open"],
             "next_day_v_repair_ready": run["next_day_v_repair_ready"],
+            "next_day_warm_probe_ready": run["next_day_warm_probe_ready"],
             "last_d_label": run.get("last_d_label"),
             "up_count": run["up_count"],
             "mid_count": run["mid_count"],
