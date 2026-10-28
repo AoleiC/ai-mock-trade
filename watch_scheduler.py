@@ -16,7 +16,7 @@
 支持的环境变量（也提供同名 CLI 参数，CLI 参数优先）：
   WATCH_CLI              AI CLI 名称，可选 opencode | claude，默认 opencode
   WATCH_INTERVAL_MINUTES 盯盘触发间隔（分钟），默认 5
-  WATCH_PROJECT_DIR      项目根目录（含 CLAUDE.md / AGENTS.md），默认脚本所在目录
+  WATCH_PROJECT_DIR      项目根目录（含 AGENTS.md），默认脚本所在目录
   WATCH_PROMPT_WATCH     盯盘提示词，默认 "执行一次盯盘"
   WATCH_PROMPT_REVIEW    盘后复盘提示词，默认 "复盘今天的行情数据"
   WATCH_REVIEW_HOUR      复盘触发小时（24h 制），默认 21

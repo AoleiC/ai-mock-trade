@@ -17,7 +17,7 @@
 - **AI 盯盘**：盘中自主盯盘、情绪判断、持仓止损止盈检查、按用户自建规则执行模拟交易
 - **每日复盘**：盈亏与情绪复盘、操作反思、板块轮动事实记录
 - **定时调度**：常驻进程按交易时段自动盯盘、盘后自动复盘，无人值守
-- **状态读写**：市场阶段状态机、动态策略（纯本地文件）；盯盘 / 复盘总结由调度器自动归档 Markdown 时间线
+- **状态读写**：市场阶段状态机、动态策略、出手台账（当日买入 / 否决记录，纯本地文件）；盯盘 / 复盘总结由调度器自动归档 Markdown 时间线
 - **AI 调教**：主动指导 Agent 优化心法和交易策略，调教成最适合自己的样子
 
 ---
@@ -134,7 +134,7 @@ cp .env.example .env   # 编辑 .env，把 STOCK_SECRET_KEY 填成你的密钥
 
 系统采用五层架构分工，各层单一职责、叠加生效：
 
-- **系统总纲（流程控制）**：[`CLAUDE.md`](./CLAUDE.md)（Claude Code）/ [`AGENTS.md`](./AGENTS.md)（Opencode / Codex / Workbuddy / zCode / KimiWork 等第三方 Agent 工具）——总流程控制、必调接口、字段含义与输出规范
+- **系统总纲（流程控制）**：[`AGENTS.md`](./AGENTS.md)（Opencode / Codex / Workbuddy / zCode / KimiWork 等第三方 Agent 工具）——总流程控制、必调接口、字段含义与输出规范
 - **心法（认知与纪律）**：[`memory/trading-mindset.md`](./memory/trading-mindset.md)——永远要做 / 永远不做的红线 + 业内术语字典，每个用户最核心的纪律要求（按需修改）
 - **裁决层（市场阶段状态机）**：[`memory/strategies/00-regime-machine.md`](./memory/strategies/00-regime-machine.md) + `skills/journal` 状态机代码——「今天处于什么阶段」的唯一权威判定，转移规则由代码统一执行、盘中自愈
 - **战法层（各阶段细则）**：[`memory/strategies/`](./memory/strategies/) 四大战法分册——冰点博弈 `10-ice-point.md` / 高潮期持仓管理 `20-main-uptrend.md` / 退潮分歧期切换 `30-high-oscillation.md` / 退潮期防守 `40-retreat-defense.md`

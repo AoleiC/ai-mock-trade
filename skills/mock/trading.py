@@ -48,7 +48,7 @@ def get_account(secret_key: str = None) -> dict:
 
     返回 -> dict（信封格式）：
         data: dict，含账号详情，字段如下：
-            id: int                       - 账号 ID
+            share_code: str               - 对外分享码（随机 10 位、终身不变；分享链接与对外标识用它，非自增账号 ID）
             account_name: str             - 账号名称
             account_type: int             - 账号类型
             account_status: int           - 1=正常 / 2=冻结 / 3=销户 / 4=超限暂停

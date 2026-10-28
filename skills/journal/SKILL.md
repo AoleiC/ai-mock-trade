@@ -1,10 +1,10 @@
 ---
 name: journal
 description: >
-  柚子 AI 的本地状态读写能力：市场阶段状态机（regime）、动态策略。
-  纯本地文件操作，不依赖网络接口。当用户提到动态策略读写、
-  市场阶段 / 状态机 / regime / 试错通道资格 / 盘中自愈重建等本地状态
-  持久化操作时，使用此 skill。总结上报（submit_summary）属于接口调用，见 mock skill。
+  柚子 AI 的本地状态读写能力：市场阶段状态机（regime）、出手台账（当日买入 / 否决记录）、动态策略。
+  纯本地文件操作，不依赖网络接口。当用户提到动态策略读写、市场阶段 / 状态机 / regime /
+  试错通道资格 / 盘中自愈重建 / 出手台账 / 买入否决记录等本地状态持久化操作时，
+  使用此 skill。总结上报（submit_summary）属于接口调用，见 mock skill。
 compatibility: []
 ---
 
@@ -56,6 +56,7 @@ python skills/journal/cli.py regime_rebuild --raw @raw.json --write_back true --
 ```python
 from skills.journal.journal import (
     read_regime_state, regime_advance, regime_rebuild,
+    record_decision, read_decisions,
     read_dynamic_strategy, write_dynamic_strategy,
 )
 ```
@@ -92,7 +93,30 @@ cli.py regime_rebuild --raw @/tmp/history.json --write_back true
 cli.py regime_rebuild --raw '<接口返回JSON>' --write_back true --before_date 2026-09-07
 ```
 
-## 二、动态策略
+## 二、出手台账（当日买入 / 否决记录，跨轮记忆层）
+
+读写 `data/trade-journal-{date}.json`（按日滚动）。agent 每轮 headless 独立上下文，当日否决过谁、已出手几笔全靠本台账；「否决一致性」「同日同方向递减出手」「单向暴露硬顶」三条纪律的唯一数据源。机械层（watch_context）每轮对账后随注入块供给预聚合结果，agent 常态直接消费注入，不重复调用。
+
+| 函数 | 用途 | 必填 |
+|------|------|------|
+| `record_decision(trade_date, action, stock_code, stock_name="", direction=None, price=0, volume=0, reason="", time_str=None, source="agent")` | 追加一条当日决策记录：买入成交后记 buy（含方向归属与理由）、否决候选后记 veto（含否决理由——复买须推翻此理由） | `trade_date` / `action` / `stock_code` |
+| `read_decisions(trade_date=None)` | 读当日台账（预聚合：buy_count / buy_by_direction / veto_list） | — |
+
+**示例**：
+```bash
+# 买入成交后落账（买入流程硬步骤）
+cli.py record_decision --trade_date 2026-10-28 --action buy --stock_code 002747 \
+  --stock_name 埃斯顿 --direction 机器人 --price 30.31 --volume 300 --reason "共振成立、方向内中军"
+
+# 否决候选后落账（当日复买须推翻此理由）
+cli.py record_decision --trade_date 2026-10-28 --action veto --stock_code 603859 \
+  --stock_name 能科科技 --direction 机器人 --reason "辨识度弱、主力净流入仅2150万"
+
+# 读当日台账（agent 兜底用；常态消费机械层注入块）
+cli.py read_decisions --trade_date 2026-10-28
+```
+
+## 三、动态策略
 
 读写 `memory/dynamic-strategy.md`（仅按需改写，复盘不自动写回）。
 
@@ -101,23 +125,26 @@ cli.py regime_rebuild --raw '<接口返回JSON>' --write_back true --before_date
 | `read_dynamic_strategy()` | 读动态策略 | — |
 | `write_dynamic_strategy(content: str)` | 改写动态策略 | `content` |
 
-## 三、常见调用组合
+## 四、常见调用组合
 
 ```python
 # 盘中第 0 步：读当日生效阶段（缺 / 落后即自愈重建）
 from skills.journal.journal import read_regime_state, regime_rebuild
+
+# 出手流程：买入成交 / 否决候选后落台账（跨轮记忆）
+from skills.journal.journal import record_decision, read_decisions
 ```
 
 > 总结上报到后台（HTTP）不在此 skill：调 mock 的 `report.submit_summary`。
 
 ---
 
-## 四、调试
+## 五、调试
 
 import 自检（`cwd = 项目根目录`，供人类开发者用）：
 
 ```bash
-python -c "from skills.journal.journal import read_regime_state, regime_advance, regime_rebuild, read_dynamic_strategy, write_dynamic_strategy; print('ok')"
+python -c "from skills.journal.journal import read_regime_state, regime_advance, regime_rebuild, read_dynamic_strategy, write_dynamic_strategy, record_decision, read_decisions; print('ok')"
 ```
 
 CLI runner 自检：

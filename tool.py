@@ -52,16 +52,15 @@ _ZIP_ROOT = "ai-mock-trade"
 
 # 模块 → 覆盖目标（kind=dir 递归整目录，kind=file 单文件）
 # skills：SDK 代码，最常更新；memory：心法/策略（用户定制资产，覆盖前必备份）；
-# agents/claude：AGENTS.md + CLAUDE.md（互为别名，同步覆盖）；all：上述全部 + 顶层文件
+# agents：AGENTS.md 系统总纲；all：上述全部 + 顶层文件
 MODULE_TARGETS: dict[str, list[tuple[str, str]]] = {
     "skills": [("dir", "skills")],
     "memory": [("dir", "memory")],
-    "agents": [("file", "AGENTS.md"), ("file", "CLAUDE.md")],
+    "agents": [("file", "AGENTS.md")],
     "all": [
         ("dir", "skills"),
         ("dir", "memory"),
         ("file", "AGENTS.md"),
-        ("file", "CLAUDE.md"),
         ("file", "README.md"),
         ("file", "LICENSE"),
         ("file", "watch_scheduler.py"),
@@ -71,7 +70,7 @@ MODULE_TARGETS: dict[str, list[tuple[str, str]]] = {
         ("dir", "assets"),
     ],
 }
-# 模块别名：claude 与 agents 等价（都覆盖 AGENTS.md + CLAUDE.md）
+# 模块别名：claude 与 agents 等价（都覆盖 AGENTS.md）
 _MODULE_ALIASES = {"claude": "agents"}
 
 # 永久黑名单（按路径任意段匹配，任何模块都不覆盖）

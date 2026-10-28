@@ -7,6 +7,7 @@ agent 通过 cli.py 调用，不直接操作文件。
 
 文件存储约定（均相对工作区根 = 项目根目录）：
     - data/regime-state.json           市场阶段状态机（滚动单文件，盘中自愈写回）
+    - data/trade-journal-{date}.json   出手台账（按日滚动：当日买入 / 否决记录，跨轮记忆层）
     - memory/dynamic-strategy.md       动态交易策略（仅按需改写，不复盘时自动写）
 
 注：盯盘 / 复盘总结全文（data/watch-summary-{date}.md / review-summary-{date}.md）由
@@ -709,4 +710,157 @@ def regime_rebuild(raw: dict, write_back: bool = False, before_date: Optional[st
         "state_label": _STATE_LABELS[run["current_state"]],
         "history": history,
         "written": written,
+    }
+
+
+# ==================== 出手台账（当日买入 / 否决记录，跨轮记忆层） ====================
+#
+# 背景：agent 每轮 headless 独立上下文且盘中禁读 watch-summary，跨轮决策记忆（当日否决过谁、
+# 已出手几笔、什么方向）此前没有落点——写在总结里的否决理由下一轮的自己看不见。台账按日
+# 滚动落盘，是「否决一致性」「同日同方向递减出手」「单向暴露硬顶」三条纪律的唯一数据源；
+# 机械层（watch_context.build_discipline_budget）每轮对账后随注入块供给，agent 常态只消费
+# 注入结果；买入成交后 / 否决候选后由 agent 主动调 record_decision 落账（买入流程硬步骤）。
+# 机械层对账补录（agent 漏记时从当日买入委托反补）同走 record_decision，source="orders"。
+
+# 台账动作枚举：buy=买入成交记录（含方向归属，递减计数与对账补录用）/ veto=候选否决记录（否决一致性核对用）
+_TRADE_JOURNAL_ACTIONS = ("buy", "veto")
+
+
+# 记录一条当日出手决策（买入成交后 / 否决候选后调用；机械层对账补录亦走此入口）
+def record_decision(trade_date: str, action: str, stock_code: str, stock_name: str = "",
+                    direction: Optional[str] = None, price=0, volume=0, reason: str = "",
+                    time_str: Optional[str] = None, source: str = "agent") -> dict:
+    """
+    向当日出手台账追加一条决策记录（append-only 事件流，本方法不做去重——重复防护由调用方对账逻辑承担）
+
+    入参：
+        trade_date: str（必传）- 交易日，格式 YYYY-MM-DD（写入 data/trade-journal-{date}.json）
+        action: str（必传）- 动作枚举：buy=买入成交 / veto=候选否决
+        stock_code: str（必传）- 股票代码，如 "002747"
+        stock_name: str（可选）- 股票名称，如 "埃斯顿"（展示用）
+        direction: str | None（可选）- 方向归属（板块名，如 "机器人"）；buy 记录的方向分组依据，
+            机械层补录时为 None（方向待确认，agent 下一轮补正或忽略）
+        price: float（可选）- buy=成交价；veto=否决时现价（可 0）
+        volume: int（可选）- buy=成交数量；veto 恒 0
+        reason: str（可选）- 一句话理由：buy=买入理由摘要 / veto=否决理由（复买须推翻此理由，写清楚关键依据）
+        time_str: str | None（可选）- 记录时间 HH:MM；缺省取当前时间；机械层补录传委托成交时间
+        source: str（可选，默认 "agent"）- 记录来源：agent=agent 主动落账 / orders=机械层对账补录
+
+    返回 -> dict：
+        {
+            "code": 200,                     # int，200 成功；400 参数错误
+            "trade_date": "2026-10-28",      # str，交易日
+            "recorded": {...},               # dict，本次落账的完整记录
+            "buy_count": 2,                  # int，当日累计 buy 记录数
+            "veto_count": 1,                 # int，当日累计 veto 记录数
+            "total_records": 3,              # int，当日累计全部记录数
+        }
+    """
+    if action not in _TRADE_JOURNAL_ACTIONS:
+        return {"code": 400, "error": f"action 必须是 {' / '.join(_TRADE_JOURNAL_ACTIONS)}，实际 {action!r}"}
+    if not stock_code:
+        return {"code": 400, "error": "stock_code 必传"}
+    try:
+        datetime.strptime(trade_date, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return {"code": 400, "error": f"trade_date {trade_date!r} 格式非法，应为 YYYY-MM-DD"}
+
+    path = os.path.join(_DATA_DIR, f"trade-journal-{trade_date}.json")
+    data = {"trade_date": trade_date, "records": []}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict) and isinstance(loaded.get("records"), list):
+                data = loaded
+        except (json.JSONDecodeError, OSError):
+            pass  # 文件损坏 → 从空台账重建（append-only 事件流，损失可由机械层对账补录兜回）
+    record = {
+        "time": time_str or datetime.now().strftime("%H:%M"),  # str，记录时间 HH:MM
+        "action": action,                                      # str，buy / veto
+        "stock_code": str(stock_code),                         # str，股票代码
+        "stock_name": stock_name or "",                        # str，股票名称
+        "direction": direction,                                # str | None，方向归属（板块名）
+        "price": float(price) if price else 0.0,               # float，成交价 / 否决时现价
+        "volume": int(volume) if volume else 0,                # int，成交数量
+        "reason": reason or "",                                # str，买入理由 / 否决理由摘要
+        "source": source,                                      # str，agent / orders（机械层对账补录）
+    }
+    data["records"].append(record)
+    # 原子覆盖写（tmp + rename，防中断写坏，与 regime-state.json 同款模式）
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, path)
+    buys = [r for r in data["records"] if r.get("action") == "buy"]
+    vetoes = [r for r in data["records"] if r.get("action") == "veto"]
+    return {
+        "code": 200,
+        "trade_date": trade_date,
+        "recorded": record,
+        "buy_count": len(buys),
+        "veto_count": len(vetoes),
+        "total_records": len(data["records"]),
+    }
+
+
+# 读取当日出手台账（agent / 机械层读入口；含方向分组与否决清单的预聚合）
+def read_decisions(trade_date: Optional[str] = None) -> dict:
+    """
+    读取当日出手台账（含预聚合：buy 方向分组、veto 清单）
+
+    入参：
+        trade_date: str（可选，默认当天）- 交易日，格式 YYYY-MM-DD
+
+    返回 -> dict：
+        {
+            "code": 200,                       # int，200 成功（空台账也算成功）；404 文件损坏
+            "trade_date": "2026-10-28",        # str，交易日
+            "records": [...],                  # list[dict]，全部记录原文（含 time/action/stock_code/direction/...）
+            "buy_count": 2,                    # int，buy 记录数
+            "veto_count": 1,                   # int，veto 记录数
+            "buy_by_direction": {              # dict，buy 按方向分组计数（direction 为 None 的记入「方向待确认」）
+                "机器人": 2,
+            },
+            "veto_list": [                     # list[dict]，否决清单（复买核对用：当日已否决标的复买须推翻原理由）
+                {"stock_code": "603859", "stock_name": "能科科技", "time": "13:17", "reason": "..."},
+            ],
+        }
+    """
+    if trade_date is None:
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+    path = os.path.join(_DATA_DIR, f"trade-journal-{trade_date}.json")
+    if not os.path.exists(path):
+        return {"code": 200, "trade_date": trade_date, "records": [], "buy_count": 0,
+                "veto_count": 0, "buy_by_direction": {}, "veto_list": []}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        records = data.get("records") or []
+    except (json.JSONDecodeError, OSError) as exc:
+        return {"code": 404, "error": f"trade-journal-{trade_date}.json 读取 / 解析失败: {exc}",
+                "trade_date": trade_date, "records": [], "buy_count": 0,
+                "veto_count": 0, "buy_by_direction": {}, "veto_list": []}
+    buys = [r for r in records if r.get("action") == "buy"]
+    vetoes = [r for r in records if r.get("action") == "veto"]
+    buy_by_direction: dict = {}
+    for r in buys:
+        key = r.get("direction") or "方向待确认"
+        buy_by_direction[key] = buy_by_direction.get(key, 0) + 1
+    return {
+        "code": 200,
+        "trade_date": trade_date,
+        "records": records,
+        "buy_count": len(buys),
+        "veto_count": len(vetoes),
+        "buy_by_direction": buy_by_direction,
+        "veto_list": [
+            {
+                "stock_code": r.get("stock_code"),
+                "stock_name": r.get("stock_name", ""),
+                "time": r.get("time", ""),
+                "reason": r.get("reason", ""),
+            }
+            for r in vetoes
+        ],
     }

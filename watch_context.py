@@ -2,13 +2,14 @@
 # -*- coding: utf-8 -*-
 """盯盘机械层：调度器触发 AI CLI 前的零 token 前置步骤。
 
-职责边界（与 AGENTS.md §3.1 / §3.1.1 契约对应）：
+职责边界（与 AGENTS.md §3.1 / §3.1.1 / §3.1.2 契约对应）：
 - agent（LLM）负责判断：阶段消费、开仓过滤、通道判定、持仓复核、输出 —— 本模块一概不碰
 - 本模块负责机械步骤（无判断、纯取数与比对），由调度器每轮触发 CLI 前调用：
   1. 昨日温度定格对账（每日一次，幂等落盘 data/recon-{date}.json，AGENTS.md §3.1.1）
   2. 市场阶段状态机读取 + 盘中自愈（AGENTS.md §3.1 第 0 步，journal 代码仍是唯一转移权威）
   3. 五项必读数据拉取（盘面分析 / 监管名单 / 账户 / 持仓 / 温度历史）
-  4. 组装注入块拼进盯盘 prompt —— agent 直接消费注入数据，不再重复调用
+  4. 纪律预算计算（出手台账对账补录 + 今日买入不可卖暴露 + 板块热度前 3，AGENTS.md §3.1.2）
+  5. 组装注入块拼进盯盘 prompt —— agent 直接消费注入数据，不再重复调用
 - 全链路容错：任何一步失败只降级为「该项不注入 + 提示 agent 自行调用」，
   绝不向外抛异常阻塞盯盘（与总纲 §九「单次失败不中断循环」对齐）
 
@@ -277,6 +278,119 @@ def fetch_watch_data(project_dir: Path) -> dict:
     return out
 
 
+# 每轮的纪律预算计算（出手台账对账补录 + 不可卖暴露 + 板块热度前 3，纯算术零判断）
+def build_discipline_budget(project_dir: Path, today: str,
+                            account_env: object, positions_env: object) -> Optional[dict]:
+    """计算「纪律预算」：当日出手台账（含委托对账补录）+ 今日买入不可卖暴露 + 板块热度前 3。
+
+    职责边界：只做取数与算术，不做任何纪律判定——「暴露 ≥15% 停新开仓」「同方向第 2 笔减半」
+    等消费语义固化在 memory/dynamic-strategy.md「出手节奏与组合纪律」，agent 读注入事实自行判定。
+
+    对账补录（buy 记录唯一兜底）：当日买入成交委托（order_type=1 且 deal_volume>0 且非无效单）
+    按 (代码, 成交量, 成交价) 匹配台账 buy 记录，缺失的由本层调 journal.record_decision 补录
+    （source="orders"、direction=None 方向待确认）——agent 漏落账时计数仍完整。
+
+    参数:
+        project_dir: 项目根目录
+        today: 当日日期字符串（YYYY-MM-DD）
+        account_env: 同轮 fetch_watch_data 拉取的 get_account 返回（复用，不重复调用）
+        positions_env: 同轮 fetch_watch_data 拉取的 get_positions 返回（同上）
+    返回:
+        纪律预算 dict（字段见注入块消费）；整体失败返回 None（注入块标注失败，agent 按退化流程自行取数）
+    """
+    # 1) 读当日出手台账（journal 是台账唯一读写权威，机械层也走 cli）
+    ok, journal = _run_sdk("skills/journal/cli.py", ["read_decisions", "--trade_date", today],
+                           project_dir, timeout=15)
+    journal = journal if (ok and isinstance(journal, dict) and journal.get("code") == 200) else None
+
+    # 2) 拉当日委托，对账补录缺失的 buy 记录
+    recovered = 0
+    ok, orders_env = _run_sdk("skills/mock/cli.py", ["trading.get_orders"], project_dir, timeout=30)
+    orders_fetched = bool(ok and isinstance(orders_env, dict) and orders_env.get("code") == 200)
+    orders_buys = []
+    if orders_fetched:
+        for o in orders_env.get("data") or []:
+            # 买入方向 + 有实际成交 + 非无效单 = 一笔出手（不依赖委托状态枚举，撤单无成交自然被排除）
+            if o.get("order_type") == 1 and (o.get("deal_volume") or 0) > 0 and not o.get("is_invalid"):
+                orders_buys.append(o)
+    if journal is not None and orders_buys:
+        # 匹配键：代码 + 成交量 + 成交价（同股同量同价当日重复概率极低；台账 price 存成交价）
+        def _key(code, vol, price) -> tuple:
+            return (str(code), int(vol or 0), round(float(price or 0), 2))
+        recorded = {
+            _key(r.get("stock_code"), r.get("volume"), r.get("price"))
+            for r in journal.get("records") or [] if r.get("action") == "buy"
+        }
+        for o in orders_buys:
+            if _key(o.get("stock_code"), o.get("deal_volume"), o.get("deal_price")) in recorded:
+                continue
+            # 机械层补录：成交时间转 HH:MM；direction 缺位由 agent 下轮核对补正
+            deal_time = o.get("deal_time")
+            time_str = dt.datetime.fromtimestamp(deal_time).strftime("%H:%M") if deal_time else None
+            ok_r, out_r = _run_sdk(
+                "skills/journal/cli.py",
+                ["record_decision", "--trade_date", today, "--action", "buy",
+                 "--stock_code", str(o.get("stock_code", "")), "--stock_name", str(o.get("stock_name", "")),
+                 "--price", str(o.get("deal_price") or 0), "--volume", str(o.get("deal_volume") or 0),
+                 "--reason", "机械层对账补录（agent 未落账）",
+                 "--time_str", time_str or "", "--source", "orders"],
+                project_dir, timeout=15,
+            )
+            if ok_r and isinstance(out_r, dict) and out_r.get("code") == 200:
+                recovered += 1
+        if recovered:
+            # 补录后重读，保证注入的计数包含补录笔数；重读失败保留补录前 journal（下轮自动对齐）
+            ok, reread = _run_sdk("skills/journal/cli.py", ["read_decisions", "--trade_date", today],
+                                  project_dir, timeout=15)
+            if ok and isinstance(reread, dict) and reread.get("code") == 200:
+                journal = reread
+
+    # 3) 今日买入不可卖暴露：持仓快照 today_buy_amount 合计 / 账户总资产
+    today_buy_amount = None
+    if isinstance(positions_env, dict) and positions_env.get("code") == 200:
+        today_buy_amount = round(sum(p.get("today_buy_amount") or 0 for p in positions_env.get("data") or []), 2)
+    total_amount = None
+    if isinstance(account_env, dict) and account_env.get("code") == 200:
+        total_amount = (account_env.get("data") or {}).get("total_amount")
+    unsellable_ratio = None
+    if today_buy_amount is not None and total_amount:
+        unsellable_ratio = round(today_buy_amount / total_amount * 100, 1)
+
+    # 4) 板块热度前 3（按涨停数）：方向位置锚点（连板高度 height）与共振认证的事实输入
+    hot_top3 = []
+    ok, hot_env = _run_sdk("skills/mock/cli.py",
+                           ["market.get_hot_spot_list", "--sort_by", "zt_count", "--limit", "3"],
+                           project_dir, timeout=30)
+    if ok and isinstance(hot_env, dict) and hot_env.get("code") == 200:
+        for h in hot_env.get("data") or []:
+            hot_top3.append({
+                "name": h.get("name"),            # str，板块名
+                "zt_count": h.get("zt_count", 0),  # int，当日涨停数
+                "height": h.get("height", 0),      # int，板块内最高连板高度（方向发酵深度锚点）
+                "lb_count": h.get("lb_count", 0),  # int，连板股数量
+            })
+
+    # 台账与委托都拉不到时无有效内容可注入，返回 None 让调用方标注失败
+    if journal is None and not orders_buys and today_buy_amount is None and not hot_top3:
+        return None
+    return {
+        "buy_count": (journal or {}).get("buy_count", len(orders_buys)),  # int，当日 buy 记录数（台账优先，缺台账时退用委托计数）
+        "buy_by_direction": (journal or {}).get("buy_by_direction") or {},  # dict，buy 按方向分组（方向待确认单独成键）
+        "veto_list": (journal or {}).get("veto_list") or [],                # list[dict]，当日否决清单
+        "journal_ok": journal is not None,      # bool，台账是否读取成功（False 时 buy 行按降级文案注入，不显示误导性的 0 笔）
+        "orders_fetched": orders_fetched,       # bool，委托是否拉取成功（False 时本轮未对账，不误报台账不一致）
+        "today_buy_amount": today_buy_amount,   # float | None，今日买入金额合计（元，T+1 当日不可卖）
+        "total_amount": total_amount,           # float | None，账户总资产（元）
+        "unsellable_ratio_pct": unsellable_ratio,  # float | None，不可卖暴露占比（%）
+        "hot_top3": hot_top3,                   # list[dict]，板块热度前 3（zt_count / height / lb_count）
+        "reconcile": {                          # dict，对账信息
+            "orders_buy_count": len(orders_buys),  # int，当日买入成交委托数（事实基准）
+            "journal_buy_count": (journal or {}).get("buy_count"),  # int | None，台账 buy 记录数（补录后）
+            "recovered": recovered,             # int，本轮机械层补录笔数
+        },
+    }
+
+
 # 总入口：执行全部机械步骤并组装注入 prompt 块
 def build_watch_context(project_dir: Path, logger: Optional[logging.Logger] = None) -> str:
     """机械层总入口：对账（每日一次）+ 状态机（读 / 自愈）+ 四项数据拉取，组装注入块。
@@ -307,6 +421,13 @@ def build_watch_context(project_dir: Path, logger: Optional[logging.Logger] = No
         recon = run_daily_recon(project_dir, log, history_env, today)
         regime, regime_note = run_regime_step(project_dir, log, history_env, today)
         market_data = fetch_watch_data(project_dir)
+
+        # 纪律预算：复用同轮账户 / 持仓拉取，另拉台账 / 委托 / 热度榜（§3.1.2）
+        budget = build_discipline_budget(
+            project_dir, today,
+            market_data.get("账户资金 trading.get_account"),
+            market_data.get("当前持仓 trading.get_positions"),
+        )
 
         lines = [
             f"【调度器机械层前置（{fetched_at} 完成）——以下数据与结果由调度器代取得，"
@@ -345,6 +466,54 @@ def build_watch_context(project_dir: Path, logger: Optional[logging.Logger] = No
         lines += [f"附 温度历史 market.get_daily_indicators_history --days {HISTORY_DAYS}：",
                   json.dumps(history_env, ensure_ascii=False) if history_env is not None
                   else '{"__fetch_error": "拉取失败，可自行调用补拉"}']
+
+        # 纪律预算注入（§3.1.2）：纯事实数字，消费纪律（停开仓 / 递减 / 复买核对）见核心层策略
+        if budget is None:
+            lines += ["", "■ 纪律预算：本轮计算失败（按退化流程自行取数判定：journal.read_decisions + "
+                          "trading.get_orders + 持仓快照算暴露 + market.get_hot_spot_list，下轮自动重试）"]
+        else:
+            # 出手笔数 + 方向分组（0 笔时简写；台账读取失败时不显示误导性计数，标注降级）
+            if not budget.get("journal_ok", True):
+                buy_line = f"台账读取失败（当日买入成交委托 {(budget.get('reconcile') or {}).get('orders_buy_count', 0)} 笔可参考，自行补拉 journal.read_decisions）"
+            else:
+                direction_parts = "、".join(f"{k} {v} 笔" for k, v in budget["buy_by_direction"].items())
+                buy_line = f"{budget['buy_count']} 笔（{direction_parts}）" if direction_parts else "0 笔"
+            # 否决清单（理由截断保持注入块紧凑）
+            veto_parts = "；".join(
+                f"{v.get('stock_name') or v.get('stock_code')}（{v.get('time')}，{(v.get('reason') or '')[:40]}）"
+                for v in budget["veto_list"]
+            )
+            # 不可卖暴露（账户或持仓缺位时标注计算缺位，不编造数字）
+            if budget.get("today_buy_amount") is not None and budget.get("total_amount"):
+                exposure_part = (f"{budget['today_buy_amount']} 元 / 总资产 {budget['total_amount']} 元"
+                                 f" = {budget['unsellable_ratio_pct']}%")
+            else:
+                exposure_part = "计算缺位（账户或持仓拉取失败，自行按持仓快照 today_buy_amount 合计补算）"
+            # 板块热度前 3（height = 方向发酵深度锚点）
+            hot_parts = "、".join(
+                f"{h['name']}（涨停 {h['zt_count']} 只 / 最高 {h['height']} 板）" for h in budget["hot_top3"]
+            )
+            # 台账对账结论（委托拉取失败 → 本轮未对账；一致 / 已补录 / 不一致提示补记）
+            rec = budget.get("reconcile") or {}
+            if not budget.get("orders_fetched", True):
+                reconcile_note = f"委托拉取失败，本轮未对账（台账 {rec.get('journal_buy_count')} 笔，下轮自动重试）"
+            elif rec.get("journal_buy_count") != rec.get("orders_buy_count"):
+                reconcile_note = (f"不一致（台账 {rec.get('journal_buy_count')} 笔 / 委托 "
+                                  f"{rec.get('orders_buy_count')} 笔），请核对后用 journal.record_decision 补记")
+            elif rec.get("recovered"):
+                reconcile_note = (f"本轮按委托补录 {rec.get('recovered')} 笔（方向待确认，"
+                                  f"下次出手判定前先补正方向归属）")
+            else:
+                reconcile_note = "一致"
+            lines += [
+                "",
+                "■ 纪律预算（机械层算术事实，消费纪律见核心层策略「出手节奏与组合纪律」）：",
+                f"- 当日已出手 buy：{buy_line}",
+                f"- 今日买入不可卖暴露（T+1）：{exposure_part}",
+                f"- 当日否决记录：{veto_parts or '无'}（当日复买须先推翻原否决理由）",
+                f"- 板块热度前 3（按涨停数）：{hot_parts or '无'}（height = 板块内最高连板高度，方向发酵深度锚点）",
+                f"- 台账对账：{reconcile_note}",
+            ]
         return "\n".join(lines)
     except Exception as exc:  # noqa: BLE001
         log.warning("机械层前置整体异常(降级为无注入): %s: %s", type(exc).__name__, exc)
