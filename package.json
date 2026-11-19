@@ -1,0 +1,27 @@
+{
+  "name": "ai-mock-trade",
+  "version": "2.0.0",
+  "private": true,
+  "description": "柚子 AI 盯盘/复盘系统（pi agent 单引擎 · 纯 Node 技术栈 · TS 直跑免构建）",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "start": "node src/scheduler.ts",
+    "tool": "node src/tool.ts",
+    "// dryrun": "演练模式：LLM 全链真实运行（判定/持仓分析/选股/总结），但零交易、零上报、不归档、不落账；强制绕过开仓闸与买入时间窗以便观察选股效果。区别于 --dry（零 LLM 纯机械干跑）。真实盯盘/复盘由 npm start 守护进程按交易时段自动执行",
+    "watch:dryrun": "node src/scheduler.ts --once watch --rehearse --force-round",
+    "review:dryrun": "node src/scheduler.ts --once review --rehearse --force-round"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "adm-zip": "^0.5.16"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/node": "^22.19.0",
+    "typescript": "^5.7.0"
+  }
+}
